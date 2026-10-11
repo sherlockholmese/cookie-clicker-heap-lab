@@ -13,8 +13,9 @@ pub struct Architecture;
 impl Architecture {
     pub const CODE: Address = 0x0040_0000;
     pub const RODATA: Address = 0x0100_0000;
-    pub const GLOBALS: Address = 0x0200_0000;
-    pub const HEAP: Address = 0x0000_5555_0000_0000;
+    pub const GLOBALS: Address = 0x5510_0000;
+    /// Workshop heap base from the specification: 0x055200000.
+    pub const HEAP: Address = 0x5520_0000;
     pub const STACK_TOP: Address = 0x0000_7FFF_FFFF_F000;
     pub const HEAP_SIZE: u64 = 64 * 1024;
 }

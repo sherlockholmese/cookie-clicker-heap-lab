@@ -8,9 +8,6 @@ use std::path::PathBuf;
     about = "64-bit heap and memory-corruption educational game"
 )]
 struct Cli {
-    /// Enable the integrated memory debugger
-    #[arg(long)]
-    debug: bool,
     /// Load game state from FILE instead of starting a fresh game
     #[arg(long, value_name = "FILE")]
     load: Option<PathBuf>,
@@ -53,7 +50,7 @@ fn main() -> std::process::ExitCode {
     match eframe::run_native(
         &window_title,
         options,
-        Box::new(move |cc| Ok(Box::new(cookie_ui::CookieApp::new(cc, machine, cli.debug)))),
+        Box::new(move |cc| Ok(Box::new(cookie_ui::CookieApp::new(cc, machine, true)))),
     ) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -69,11 +66,9 @@ mod tests {
     #[test]
     fn help_and_gating() {
         let help = Cli::command().render_long_help().to_string();
-        for flag in ["--debug", "--load", "--seed", "--version"] {
+        for flag in ["--load", "--seed", "--version"] {
             assert!(help.contains(flag));
         }
-        assert!(!Cli::try_parse_from(["app"]).unwrap().debug);
-        assert!(Cli::try_parse_from(["app", "--debug"]).unwrap().debug);
     }
     #[test]
     fn seed_conflicts_with_load() {

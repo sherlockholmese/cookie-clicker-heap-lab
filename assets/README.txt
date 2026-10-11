@@ -1,21 +1,11 @@
-COOKIE HEAP LAB RESOURCE PACK
+Workshop resources
+==================
 
-The application looks for this assets folder in the current working directory,
-then beside the executable. If neither exists, it uses the copy embedded at
-build time.
+strings.txt contains user-facing interface copy. Change values after '=' while
+keeping the keys intact, then rebuild the application.
 
-strings.txt
------------
-Edit the text after each '='. Do not rename the key on the left. Keep named
-placeholders such as {count}, {price}, and {path}; the application replaces
-them at runtime. Use \n for a line break.
+cookie.sprite.txt is placeholder art. Its simple palette format is intentionally
+kept separate so a human designer can replace it or wire in final artwork later.
 
-Choose Appearance > Reload resources to apply text and sprite edits without
-restarting the application.
-
-*.sprite.txt
-------------
-Sprites use a plain text indexed-palette format. The size line is WIDTHxHEIGHT.
-Each palette line assigns one character to an RRGGBBAA color. A palette color
-with alpha 00 is transparent. The rows after "pixels:" must exactly match the
-declared width and height.
+The current interface uses egui's platform/default font and colors. This project
+does not prescribe final typography, palette, or imagery.

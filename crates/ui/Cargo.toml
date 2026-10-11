@@ -7,13 +7,8 @@ license.workspace = true
 
 [dependencies]
 eframe.workspace = true
-egui_dock.workspace = true
 cookie-game.workspace = true
 vm-core.workspace = true
-vm-heap.workspace = true
-debugger.workspace = true
-save-state.workspace = true
-rfd = "0.15"
 
 [lints]
 workspace = true
