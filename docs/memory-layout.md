@@ -19,6 +19,7 @@ All fields and pointers are eight-byte little-endian values unless stated otherw
 | `+0x20` | `u64` | Maximum username input size, initially 32 |
 | `+0x28` | pointer | Function table at `.bss + 0x300` |
 | `+0x30` | `u64` | Win state |
+| `+0x38` | `u64` | Flag-owned state |
 
 The function table contains `add_cookie` (`0x00400100`) followed by `win` (`0x00400180`). The corresponding `.text` locations contain labelled teaching bytecode rather than native instructions.
 

@@ -16,7 +16,7 @@ The same Rust codebase builds on Linux, Windows, and macOS. `--seed` starts a de
 
 - Click the cookie for one cookie.
 - Buy a Cursor for 10 cookies. Every Cursor produces one cookie per second.
-- Buy the flag for 1,000,000,000,000 cookies.
+- Buy the flag for 1,000,000,000,000 cookies. Acquiring the flag and calling `win()` are separate goals.
 - Edit the username, Cursor names, and Cursor descriptions. Text fields accept raw bytes with `\xNN`, such as `A\x00\xFF`.
 - Click a Cursor to dispatch its simulated `on_clicked` function pointer.
 
@@ -48,4 +48,4 @@ cargo test --workspace --locked
 cargo build --release --locked
 ```
 
-See [architecture](docs/architecture.md) and [memory layout](docs/memory-layout.md) for instructor-facing implementation details.
+See [architecture](docs/architecture.md), [memory layout](docs/memory-layout.md), and [specification compliance](docs/spec-compliance.md) for instructor-facing implementation details.

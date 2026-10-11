@@ -1,11 +1,18 @@
 //! Workshop game state stored entirely in checked, simulated memory.
 #![forbid(unsafe_code)]
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use vm_core::{
     Address, Architecture, ExecutionBackend, Memory, Permissions, RegionKind, WriteSource,
 };
 use vm_heap::Heap;
+
+const COPY: &str = include_str!("../../../assets/strings.txt");
+fn text(key: &str) -> &'static str {
+    COPY.lines()
+        .filter_map(|line| line.split_once('='))
+        .find_map(|(candidate, value)| (candidate.trim() == key).then_some(value.trim()))
+        .unwrap_or("<missing text>")
+}
 
 pub const TICKS_PER_SECOND: u64 = 20;
 pub const FLAG_PRICE: u64 = 1_000_000_000_000;
@@ -19,6 +26,7 @@ pub mod globals {
     pub const MAX_FIELD_SIZE: u64 = 0x20;
     pub const FUNCTIONS: u64 = 0x28;
     pub const WON: u64 = 0x30;
+    pub const FLAG_OWNED: u64 = 0x38;
     pub const CURSOR_TABLE: u64 = 0x100;
 }
 pub mod user_field {
@@ -35,19 +43,31 @@ pub const FN_ADD_COOKIE: Address = Architecture::CODE + 0x100;
 pub const FN_WIN: Address = Architecture::CODE + 0x180;
 pub const FUNCTION_TABLE: Address = Architecture::GLOBALS + 0x300;
 
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameError {
-    #[error("segmentation fault at 0x{0:016X}; the operation was reverted")]
     SegmentationFault(Address),
-    #[error("not enough cookies")]
     NotEnoughCookies,
-    #[error("the cursor table is full")]
     CursorTableFull,
-    #[error("field input exceeds the current maximum of {0} bytes")]
     FieldTooLong(u64),
-    #[error("{0}")]
     Vm(String),
 }
+impl std::fmt::Display for GameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::SegmentationFault(address) => {
+                text("error.segfault").replace("{address}", &format!("0x{address:016X}"))
+            }
+            Self::NotEnoughCookies => text("error.not_enough_cookies").into(),
+            Self::CursorTableFull => text("error.cursor_table_full").into(),
+            Self::FieldTooLong(count) => {
+                text("error.field_too_long").replace("{count}", &count.to_string())
+            }
+            Self::Vm(message) => message.clone(),
+        };
+        formatter.write_str(&message)
+    }
+}
+impl std::error::Error for GameError {}
 type Result<T> = std::result::Result<T, GameError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +89,7 @@ pub struct GameView {
     pub cursor_table_ptr: Address,
     pub max_field_size: u64,
     pub cursors: Vec<CursorView>,
+    pub flag_owned: bool,
     pub won: bool,
 }
 
@@ -151,7 +172,10 @@ impl Machine {
         let username = self.alloc(32, "char username[32]")?;
         let cookies = self.alloc(8, "struct Cookies")?;
         let user = self.alloc(16, "struct User")?;
-        self.store(username, b"student\0", "initial username")?;
+        let mut initial_username =
+            text("default.username").as_bytes()[..text("default.username").len().min(31)].to_vec();
+        initial_username.push(0);
+        self.store(username, &initial_username, "initial username")?;
         self.store_u64(cookies, 0, "Cookies.cookies")?;
         self.store_u64(user + user_field::ID, 1, "User.id")?;
         self.store_u64(user + user_field::USERNAME, username, "User.username")?;
@@ -167,6 +191,7 @@ impl Machine {
             (globals::MAX_FIELD_SIZE, 32, "max_field_size"),
             (globals::FUNCTIONS, FUNCTION_TABLE, "function table"),
             (globals::WON, 0, "win state"),
+            (globals::FLAG_OWNED, 0, "flag owned"),
         ] {
             self.store_u64(Architecture::GLOBALS + off, value, label)?;
         }
@@ -256,6 +281,7 @@ impl Machine {
             cursor_table_ptr: self.cursor_table_address(),
             max_field_size: self.load_u64(Architecture::GLOBALS + globals::MAX_FIELD_SIZE)?,
             cursors,
+            flag_owned: self.load_u64(Architecture::GLOBALS + globals::FLAG_OWNED)? != 0,
             won: self.load_u64(Architecture::GLOBALS + globals::WON)? != 0,
         })
     }
@@ -278,7 +304,11 @@ impl Machine {
             return Err(GameError::NotEnoughCookies);
         }
         self.store_u64(a, n - FLAG_PRICE, "buy flag")?;
-        self.store_u64(Architecture::GLOBALS + globals::WON, 1, "flag purchased")
+        self.store_u64(
+            Architecture::GLOBALS + globals::FLAG_OWNED,
+            1,
+            "flag purchased",
+        )
     }
     pub fn buy_cursor(&mut self) -> Result<()> {
         let ca = self.cookies_address()?;
@@ -292,14 +322,16 @@ impl Machine {
         }
         let description = self.alloc(64, "char Cursor.description[64]")?;
         let cursor = self.alloc(32, "struct Cursor")?;
-        self.store(
-            description,
-            b"Produces one cookie per second.\0",
-            "Cursor.description",
-        )?;
+        let mut initial_description = text("default.cursor.description").as_bytes()
+            [..text("default.cursor.description").len().min(63)]
+            .to_vec();
+        initial_description.push(0);
+        self.store(description, &initial_description, "Cursor.description")?;
         self.store_u64(cursor + cursor_field::ID, count as u64 + 1, "Cursor.id")?;
         let mut name = [0; 8];
-        name[..6].copy_from_slice(b"Cursor");
+        let configured_name = text("default.cursor.name").as_bytes();
+        let name_len = configured_name.len().min(name.len());
+        name[..name_len].copy_from_slice(&configured_name[..name_len]);
         self.store(cursor + cursor_field::NAME, &name, "Cursor.name")?;
         self.store_u64(
             cursor + cursor_field::DESCRIPTION,
@@ -367,7 +399,7 @@ impl Machine {
     fn cursor_address(&self, i: usize) -> Result<Address> {
         let n = self.load_u64(Architecture::GLOBALS + globals::CURSOR_COUNT)? as usize;
         if i >= n || i >= MAX_CURSORS {
-            return Err(GameError::Vm("cursor does not exist".into()));
+            return Err(GameError::Vm(text("error.cursor_missing").into()));
         }
         self.load_u64(self.cursor_table_address() + i as u64 * 8)
     }
@@ -442,6 +474,47 @@ impl ExecutionBackend for Machine {
 mod tests {
     use super::*;
     #[test]
+    fn fresh_memory_layout_matches_the_workshop_contract() {
+        let mut m = Machine::new(1).unwrap();
+        let view = m.view().unwrap();
+        assert_eq!(Architecture::HEAP, 0x0552_00000);
+        assert_eq!(view.username_ptr, Architecture::HEAP);
+        assert_eq!(view.cookies_ptr, Architecture::HEAP + 32);
+        assert_eq!(view.user_ptr, Architecture::HEAP + 40);
+        assert_eq!(
+            m.memory.read_u64(view.user_ptr + user_field::ID).unwrap(),
+            1
+        );
+        assert_eq!(
+            m.memory
+                .read_u64(view.user_ptr + user_field::USERNAME)
+                .unwrap(),
+            view.username_ptr
+        );
+        assert_eq!(
+            m.memory
+                .read_u64(Architecture::GLOBALS + globals::CURSORS)
+                .unwrap(),
+            Architecture::GLOBALS + globals::CURSOR_TABLE
+        );
+        assert_eq!(m.memory.read(FN_ADD_COOKIE, 10).unwrap(), b"ADD_COOKIE");
+        assert!(m.write_memory(FN_WIN, &[0]).is_err());
+
+        for _ in 0..10 {
+            m.click().unwrap();
+        }
+        m.buy_cursor().unwrap();
+        let cursor = m.view().unwrap().cursors[0].address;
+        assert_eq!(m.memory.read_u64(m.cursor_table_address()).unwrap(), cursor);
+        assert_eq!(m.memory.read_u64(cursor).unwrap(), 1);
+        assert_eq!(
+            m.memory
+                .read_u64(cursor + cursor_field::ON_CLICKED)
+                .unwrap(),
+            FN_ADD_COOKIE
+        );
+    }
+    #[test]
     fn basic_game_and_live_memory() {
         let mut m = Machine::new(1).unwrap();
         for _ in 0..10 {
@@ -468,6 +541,25 @@ mod tests {
         p.extend(FLAG_PRICE.to_le_bytes());
         m.rename_user(&p).unwrap();
         assert_eq!(m.view().unwrap().cookies, FLAG_PRICE);
+    }
+    #[test]
+    fn renaming_preserves_the_username_pointer() {
+        let mut m = Machine::new(1).unwrap();
+        let before = m.view().unwrap().username_ptr;
+        m.rename_user(b"new user").unwrap();
+        let view = m.view().unwrap();
+        assert_eq!(view.username, "new user");
+        assert_eq!(view.username_ptr, before);
+    }
+    #[test]
+    fn flag_and_win_are_separate_goals() {
+        let mut m = Machine::new(1).unwrap();
+        let cookies = m.cookies_address().unwrap();
+        m.write_memory(cookies, &FLAG_PRICE.to_le_bytes()).unwrap();
+        m.buy_flag().unwrap();
+        let view = m.view().unwrap();
+        assert!(view.flag_owned);
+        assert!(!view.won);
     }
     #[test]
     fn function_pointer_calls_win() {
@@ -513,5 +605,46 @@ mod tests {
         m.describe_cursor(0, &FN_WIN.to_le_bytes()).unwrap();
         m.invoke_cursor(0).unwrap();
         assert!(m.view().unwrap().won);
+    }
+
+    #[test]
+    fn fake_cursor_writes_through_a_pointer_into_cookie_count() {
+        let mut m = Machine::new(1).unwrap();
+        let view = m.view().unwrap();
+        let mut fake_cursor = 7u64.to_le_bytes().to_vec();
+        fake_cursor.extend(*b"FAKE\0\0\0\0");
+        fake_cursor.extend(view.cookies_ptr.to_le_bytes());
+        fake_cursor.extend(FN_ADD_COOKIE.to_le_bytes());
+        m.write_memory(view.username_ptr, &fake_cursor).unwrap();
+        m.write_memory(m.cursor_table_address(), &view.username_ptr.to_le_bytes())
+            .unwrap();
+        m.write_memory(
+            Architecture::GLOBALS + globals::CURSOR_COUNT,
+            &1u64.to_le_bytes(),
+        )
+        .unwrap();
+
+        m.describe_cursor(0, &FLAG_PRICE.to_le_bytes()).unwrap();
+        assert_eq!(m.view().unwrap().cookies, FLAG_PRICE);
+    }
+
+    #[test]
+    fn replacing_username_pointer_changes_the_visible_string() {
+        let mut m = Machine::new(1).unwrap();
+        for _ in 0..10 {
+            m.click().unwrap();
+        }
+        m.buy_cursor().unwrap();
+        let view = m.view().unwrap();
+        let replacement = view.cursors[0].description_ptr;
+        m.write_memory(
+            view.user_ptr + user_field::USERNAME,
+            &replacement.to_le_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            m.view().unwrap().username,
+            text("default.cursor.description")
+        );
     }
 }

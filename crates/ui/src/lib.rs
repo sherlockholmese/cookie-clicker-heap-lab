@@ -64,6 +64,15 @@ impl CookieApp {
     fn report(&mut self, result: Result<(), impl std::fmt::Display>) {
         self.status = result.err().map(|e| e.to_string()).unwrap_or_default();
     }
+    fn invoke_cursor(&mut self, index: usize) {
+        match self.machine.invoke_cursor(index) {
+            Ok(()) => self.status.clear(),
+            Err(error) => {
+                self.machine = self.last_valid.clone();
+                self.status = error.to_string();
+            }
+        }
+    }
     fn tick(&mut self) {
         let now = Instant::now();
         self.accumulator += now
@@ -96,26 +105,24 @@ impl CookieApp {
         self.jump = format!("0x{address:X}");
         self.memory_open = true;
     }
-    fn parse_address(text: &str) -> Result<u64, String> {
-        let t = text.trim().replace('_', "");
+    fn parse_address(input: &str) -> Result<u64, String> {
+        let t = input.trim().replace('_', "");
         if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
             u64::from_str_radix(h, 16)
         } else {
             t.parse()
         }
-        .map_err(|_| "Enter a hexadecimal or decimal address".into())
+        .map_err(|_| text("error.address").into())
     }
-    fn parse_field(text: &str) -> Result<Vec<u8>, String> {
+    fn parse_field(input: &str) -> Result<Vec<u8>, String> {
         let mut out = Vec::new();
-        let b = text.as_bytes();
+        let b = input.as_bytes();
         let mut i = 0;
         while i < b.len() {
             if b[i] == b'\\' && i + 3 < b.len() && b[i + 1] == b'x' {
-                let pair = std::str::from_utf8(&b[i + 2..i + 4]).map_err(|_| "Invalid \\x byte")?;
-                out.push(
-                    u8::from_str_radix(pair, 16)
-                        .map_err(|_| "Use \\x followed by two hexadecimal digits")?,
-                );
+                let pair =
+                    std::str::from_utf8(&b[i + 2..i + 4]).map_err(|_| text("error.raw_byte"))?;
+                out.push(u8::from_str_radix(pair, 16).map_err(|_| text("error.raw_byte_format"))?);
                 i += 4;
             } else {
                 out.push(b[i]);
@@ -125,6 +132,7 @@ impl CookieApp {
         Ok(out)
     }
     fn pointer_target(&self, address: Address) -> Option<Address> {
+        let address = self.pointer_field_base(address).unwrap_or(address);
         let b = self.machine.read_memory(address, 8).ok()?;
         let a = u64::from_le_bytes(b.try_into().ok()?);
         self.machine
@@ -136,60 +144,196 @@ impl CookieApp {
     fn field_info(&self, address: Address) -> Option<String> {
         let g = Architecture::GLOBALS;
         let globals = [
-            (g + globals::COOKIES, "Cookies*", "pointer"),
-            (g + globals::USER, "User*", "pointer"),
-            (g + globals::CURSORS, "Cursor**", "pointer"),
-            (g + globals::CURSOR_COUNT, "cursor_count", "u64"),
-            (g + globals::MAX_FIELD_SIZE, "max_field_size", "u64"),
-            (g + globals::FUNCTIONS, "functions", "pointer"),
+            (
+                g + globals::COOKIES,
+                text("schema.cookies_pointer"),
+                text("schema.pointer"),
+            ),
+            (
+                g + globals::USER,
+                text("schema.user_pointer"),
+                text("schema.pointer"),
+            ),
+            (
+                g + globals::CURSORS,
+                text("schema.cursor_array_pointer"),
+                text("schema.pointer"),
+            ),
+            (
+                g + globals::CURSOR_COUNT,
+                text("schema.cursor_count"),
+                text("schema.u64"),
+            ),
+            (
+                g + globals::MAX_FIELD_SIZE,
+                text("schema.max_field_size"),
+                text("schema.u64"),
+            ),
+            (
+                g + globals::FUNCTIONS,
+                text("schema.functions"),
+                text("schema.pointer"),
+            ),
+            (g + globals::WON, text("schema.won"), text("schema.u64")),
+            (
+                g + globals::FLAG_OWNED,
+                text("schema.flag_owned"),
+                text("schema.u64"),
+            ),
         ];
         for (a, n, t) in globals {
             if address >= a && address < a + 8 {
                 let value = self.machine.memory.read_u64(a).ok()?;
-                return Some(format!(
-                    "{n}\n{t}\nvalue 0x{value:016X}\naddress 0x{a:016X}"
-                ));
+                let mut info = format!(
+                    "{n}\n{t}\n{} 0x{value:016X}\n{} 0x{a:016X}",
+                    text("schema.value"),
+                    text("schema.address")
+                );
+                self.append_pointer_preview(&mut info, address);
+                return Some(info);
             }
         }
+        let cursor_table = g + globals::CURSOR_TABLE;
+        if address >= cursor_table && address < cursor_table + cookie_game::MAX_CURSORS as u64 * 8 {
+            let index = (address - cursor_table) / 8;
+            let entry = cursor_table + index * 8;
+            let value = self.machine.memory.read_u64(entry).ok()?;
+            let mut info = format!(
+                "{}*[{index}]\n{}\n{} 0x{value:016X}\n{} 0x{entry:016X}",
+                text("schema.cursor"),
+                text("schema.pointer"),
+                text("schema.value"),
+                text("schema.address")
+            );
+            self.append_pointer_preview(&mut info, address);
+            return Some(info);
+        }
         for (a, name) in [
-            (cookie_game::FUNCTION_TABLE, "add_cookie"),
-            (cookie_game::FUNCTION_TABLE + 8, "win"),
+            (cookie_game::FUNCTION_TABLE, text("functions.add_cookie")),
+            (cookie_game::FUNCTION_TABLE + 8, text("functions.win")),
         ] {
             if address >= a && address < a + 8 {
                 let value = self.machine.memory.read_u64(a).ok()?;
-                return Some(format!("{name}\nfunction pointer\nvalue 0x{value:016X}"));
+                let mut info = format!(
+                    "{name}\n{}\n{} 0x{value:016X}",
+                    text("schema.function_pointer"),
+                    text("schema.value")
+                );
+                self.append_pointer_preview(&mut info, address);
+                return Some(info);
+            }
+        }
+        for (start, end, name) in [
+            (
+                cookie_game::FN_ADD_COOKIE,
+                cookie_game::FN_ADD_COOKIE + 16,
+                text("functions.add_cookie"),
+            ),
+            (
+                cookie_game::FN_WIN,
+                cookie_game::FN_WIN + 8,
+                text("functions.win"),
+            ),
+        ] {
+            if address >= start && address < end {
+                return Some(format!(
+                    "{name}\n{}\n{} +0x{:X}\n{} 0x{address:016X}",
+                    text("schema.bytecode_function"),
+                    text("schema.offset"),
+                    address - start,
+                    text("schema.address")
+                ));
             }
         }
         for a in self.machine.allocations() {
             if address >= a.base && address < a.base + a.size {
                 let offset = address - a.base;
                 let (name, ty) = match a.semantic_type.as_str() {
-                    "struct Cookies" => ("cookies", "u64"),
-                    "struct User" if offset < 8 => ("id", "u64"),
-                    "struct User" => ("username", "char*"),
-                    "struct Cursor" if offset < 8 => ("id", "u64"),
-                    "struct Cursor" if offset < 16 => ("name", "char[8]"),
-                    "struct Cursor" if offset < 24 => ("description", "char*"),
-                    "struct Cursor" => ("on_clicked", "function pointer"),
-                    _ => (a.semantic_type.as_str(), "bytes"),
+                    "struct Cookies" => (text("schema.cookies"), text("schema.u64")),
+                    "struct User" if offset < 8 => (text("schema.id"), text("schema.u64")),
+                    "struct User" => (text("schema.username"), text("schema.char_pointer")),
+                    "struct Cursor" if offset < 8 => (text("schema.id"), text("schema.u64")),
+                    "struct Cursor" if offset < 16 => (text("schema.name"), text("schema.char8")),
+                    "struct Cursor" if offset < 24 => {
+                        (text("schema.description"), text("schema.char_pointer"))
+                    }
+                    "struct Cursor" => (text("schema.on_clicked"), text("schema.function_pointer")),
+                    _ => (a.semantic_type.as_str(), text("schema.bytes")),
                 };
                 let field_base = a.base + (offset / 8) * 8;
-                let value = self
-                    .machine
-                    .memory
-                    .read_u64(field_base)
-                    .ok()
-                    .map(|v| format!("0x{v:016X}"))
-                    .unwrap_or_else(|| "unreadable".into());
-                return Some(format!(
-                    "{name}\n{ty}\nvalue {value}\n{} +0x{:X}\naddress 0x{address:016X}",
-                    a.semantic_type, offset
-                ));
+                let value = match ty {
+                    ty if ty == text("schema.u64") => self
+                        .machine
+                        .memory
+                        .read_u64(field_base)
+                        .ok()
+                        .map(|value| format!("{value} (0x{value:016X})")),
+                    ty if ty == text("schema.char8") => {
+                        self.machine.read_memory(field_base, 8).ok().map(|bytes| {
+                            let end = bytes
+                                .iter()
+                                .position(|byte| *byte == 0)
+                                .unwrap_or(bytes.len());
+                            format!("{:?}", String::from_utf8_lossy(&bytes[..end]))
+                        })
+                    }
+                    ty if ty == text("schema.char_pointer")
+                        || ty == text("schema.function_pointer") =>
+                    {
+                        self.machine.memory.read_u64(field_base).ok().map(|value| {
+                            let symbol = match value {
+                                cookie_game::FN_ADD_COOKIE => text("functions.add_cookie"),
+                                cookie_game::FN_WIN => text("functions.win"),
+                                _ => "",
+                            };
+                            if symbol.is_empty() {
+                                format!("0x{value:016X}")
+                            } else {
+                                format!("0x{value:016X} ({symbol})")
+                            }
+                        })
+                    }
+                    _ => self.machine.read_memory(field_base, 8).ok().map(|bytes| {
+                        bytes
+                            .iter()
+                            .map(|byte| {
+                                if byte.is_ascii_graphic() {
+                                    *byte as char
+                                } else {
+                                    '.'
+                                }
+                            })
+                            .collect()
+                    }),
+                }
+                .unwrap_or_else(|| text("schema.unreadable").into());
+                let object = match a.semantic_type.as_str() {
+                    "struct Cookies" => text("schema.object.cookies"),
+                    "struct User" => text("schema.object.user"),
+                    "struct Cursor" => text("schema.object.cursor"),
+                    "char username[32]" => text("schema.object.username"),
+                    "char Cursor.description[64]" => text("schema.object.description"),
+                    _ => a.semantic_type.as_str(),
+                };
+                let mut info = format!(
+                    "{name}\n{ty}\n{} {value}\n{object} +0x{:X}\n{} 0x{address:016X}",
+                    text("schema.value"),
+                    offset,
+                    text("schema.address")
+                );
+                self.append_pointer_preview(&mut info, address);
+                return Some(info);
             }
         }
         None
     }
     fn field_color(&self, address: Address) -> Option<Color32> {
+        if (cookie_game::FN_ADD_COOKIE..cookie_game::FN_ADD_COOKIE + 16).contains(&address) {
+            return Some(Color32::LIGHT_BLUE);
+        }
+        if (cookie_game::FN_WIN..cookie_game::FN_WIN + 8).contains(&address) {
+            return Some(Color32::LIGHT_GREEN);
+        }
         for allocation in self.machine.allocations() {
             if address >= allocation.base && address < allocation.base + allocation.size {
                 return Some(match ((address - allocation.base) / 8) % 4 {
@@ -202,24 +346,70 @@ impl CookieApp {
         }
         None
     }
-    fn is_pointer_field(&self, address: Address) -> bool {
+    fn append_pointer_preview(&self, info: &mut String, address: Address) {
+        let Some(base) = self.pointer_field_base(address) else {
+            return;
+        };
+        let Ok(target) = self.machine.memory.read_u64(base) else {
+            return;
+        };
+        info.push_str(&format!("\n{} 0x{target:016X}", text("schema.points_to")));
+        if let Ok(bytes) = self.machine.read_memory(target, 16) {
+            let hex = bytes
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let ascii: String = bytes
+                .iter()
+                .map(|byte| {
+                    if byte.is_ascii_graphic() {
+                        *byte as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            info.push_str(&format!("\n{hex}\n{ascii}"));
+        } else {
+            info.push('\n');
+            info.push_str(text("memory.unmapped"));
+        }
+    }
+    fn pointer_field_base(&self, address: Address) -> Option<Address> {
         let g = Architecture::GLOBALS;
-        if [0, 8, 16, 40]
-            .iter()
-            .any(|o| address >= g + o && address < g + o + 8)
-        {
-            return true;
+        for offset in [0, 8, 16, 40] {
+            let base = g + offset;
+            if address >= base && address < base + 8 {
+                return Some(base);
+            }
+        }
+        let cursor_table = g + globals::CURSOR_TABLE;
+        if address >= cursor_table && address < cursor_table + cookie_game::MAX_CURSORS as u64 * 8 {
+            return Some(cursor_table + ((address - cursor_table) / 8) * 8);
+        }
+        if (cookie_game::FUNCTION_TABLE..cookie_game::FUNCTION_TABLE + 16).contains(&address) {
+            return Some(
+                cookie_game::FUNCTION_TABLE + ((address - cookie_game::FUNCTION_TABLE) / 8) * 8,
+            );
         }
         for a in self.machine.allocations() {
             if a.semantic_type == "struct User" && address >= a.base + 8 && address < a.base + 16 {
-                return true;
+                return Some(a.base + 8);
             }
-            if a.semantic_type == "struct Cursor" && address >= a.base + 16 && address < a.base + 32
-            {
-                return true;
+            if a.semantic_type == "struct Cursor" {
+                if address >= a.base + 16 && address < a.base + 24 {
+                    return Some(a.base + 16);
+                }
+                if address >= a.base + 24 && address < a.base + 32 {
+                    return Some(a.base + 24);
+                }
             }
         }
-        false
+        None
+    }
+    fn is_pointer_field(&self, address: Address) -> bool {
+        self.pointer_field_base(address).is_some()
     }
     fn memory_window(&mut self, ctx: &egui::Context) {
         if !self.memory_open {
@@ -257,10 +447,13 @@ impl CookieApp {
                 });
                 ui.horizontal_wrapped(|ui| {
                     for (label, a) in [
-                        (".text", Architecture::CODE),
-                        (".bss", Architecture::GLOBALS),
-                        ("heap", Architecture::HEAP),
-                        ("functions", cookie_game::FUNCTION_TABLE),
+                        (text("memory.section.text"), Architecture::CODE),
+                        (text("memory.section.bss"), Architecture::GLOBALS),
+                        (text("memory.section.heap"), Architecture::HEAP),
+                        (
+                            text("memory.section.functions"),
+                            cookie_game::FUNCTION_TABLE,
+                        ),
                     ] {
                         if ui.button(label).clicked() {
                             self.jump_to(a);
@@ -307,7 +500,7 @@ impl CookieApp {
                         });
                 }
                 if let Some(address) = self.selected {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(format!("0x{address:016X}"));
                         ui.text_edit_singleline(&mut self.edit_value);
                         if ui.button(text("memory.write")).clicked() {
@@ -320,7 +513,7 @@ impl CookieApp {
                                     16,
                                 )
                                 .map(|v| vec![v])
-                                .map_err(|_| "Enter one hexadecimal byte".into())
+                                .map_err(|_| text("error.hex_byte").into())
                             };
                             match parsed {
                                 Ok(bytes) => {
@@ -330,10 +523,19 @@ impl CookieApp {
                                 Err(e) => self.status = e,
                             }
                         }
+                        if self.pointer_field_base(address).is_some()
+                            && ui.button(text("memory.follow")).clicked()
+                            && let Some(target) = self.pointer_target(address)
+                        {
+                            self.jump_to(target);
+                        }
                     });
                 }
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                if !self.status.is_empty() {
+                    ui.separator();
+                    ui.label(&self.status);
+                }
+                egui::ScrollArea::both().show(ui, |ui| {
                     for row in 0..32u64 {
                         let base = self.memory_base + row * 16;
                         let bytes = self.machine.read_memory(base, 16);
@@ -352,7 +554,14 @@ impl CookieApp {
                                             let text = format!("{v:016X}");
                                             let mut rt = RichText::new(text).monospace();
                                             if self.is_pointer_field(a) {
-                                                rt = rt.color(Color32::RED);
+                                                rt = rt.color(Color32::RED).underline();
+                                                if let Some(color) = self.field_color(a) {
+                                                    rt = rt.background_color(
+                                                        color.gamma_multiply(0.2),
+                                                    );
+                                                }
+                                            } else if let Some(color) = self.field_color(a) {
+                                                rt = rt.underline().color(color);
                                             }
                                             let response =
                                                 ui.selectable_label(self.selected == Some(a), rt);
@@ -373,11 +582,19 @@ impl CookieApp {
                                         }
                                     } else {
                                         for (i, v) in bytes.iter().enumerate() {
+                                            if i == 8 {
+                                                ui.separator();
+                                            }
                                             let a = base + i as u64;
                                             let mut rt =
                                                 RichText::new(format!("{v:02X}")).monospace();
                                             if self.is_pointer_field(a) {
-                                                rt = rt.color(Color32::RED);
+                                                rt = rt.color(Color32::RED).underline();
+                                                if let Some(color) = self.field_color(a) {
+                                                    rt = rt.background_color(
+                                                        color.gamma_multiply(0.2),
+                                                    );
+                                                }
                                             } else if let Some(color) = self.field_color(a) {
                                                 rt = rt.underline().color(color);
                                             }
@@ -413,12 +630,20 @@ impl CookieApp {
                         });
                     }
                 });
-                ui.separator();
             });
         self.memory_open = open;
     }
     fn game(&mut self, ui: &mut egui::Ui, view: &GameView) {
-        ui.horizontal(|ui| {
+        if view.won {
+            ui.vertical_centered(|ui| {
+                ui.heading(text("game.win.title"));
+                if ui.button(text("memory.open")).clicked() {
+                    self.memory_open = true;
+                }
+            });
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .selectable_label(self.pointer_mode, text("pointer.toggle"))
@@ -432,10 +657,19 @@ impl CookieApp {
             });
         });
         ui.separator();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let response = ui.label(format!("{} {}", text("game.user"), view.username));
             if self.pointer_mode {
-                response.on_hover_text(format!("username → 0x{:016X}", view.username_ptr));
+                let mut inspect = false;
+                response.on_hover_ui(|ui| {
+                    ui.label(text("schema.username"));
+                    inspect = ui
+                        .link(RichText::new(format!("0x{:016X}", view.username_ptr)).monospace())
+                        .clicked();
+                });
+                if inspect {
+                    self.jump_to(view.username_ptr);
+                }
                 if ui
                     .link(RichText::new(format!("0x{:016X}", view.username_ptr)).monospace())
                     .clicked()
@@ -459,9 +693,16 @@ impl CookieApp {
             ui.heading(format!("{} {}", view.cookies, text("game.cookies")));
             let cookie = ui.add_sized([180.0, 180.0], egui::Button::new(text("game.cookie")));
             if self.pointer_mode {
-                cookie
-                    .clone()
-                    .on_hover_text(format!("Cookies.cookies → 0x{:016X}", view.cookies_ptr));
+                let mut inspect = false;
+                cookie.clone().on_hover_ui(|ui| {
+                    ui.label(text("schema.cookies_value"));
+                    inspect = ui
+                        .link(RichText::new(format!("0x{:016X}", view.cookies_ptr)).monospace())
+                        .clicked();
+                });
+                if inspect {
+                    self.jump_to(view.cookies_ptr);
+                }
             }
             if cookie.clicked() {
                 let r = self.machine.click();
@@ -476,7 +717,7 @@ impl CookieApp {
             }
         });
         ui.add_space(16.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
                     view.cookies >= CURSOR_PRICE,
@@ -489,7 +730,7 @@ impl CookieApp {
             }
             if ui
                 .add_enabled(
-                    view.cookies >= FLAG_PRICE,
+                    view.cookies >= FLAG_PRICE && !view.flag_owned,
                     egui::Button::new(format!("{} — {FLAG_PRICE}", text("game.flag.buy"))),
                 )
                 .clicked()
@@ -497,14 +738,26 @@ impl CookieApp {
                 let r = self.machine.buy_flag();
                 self.report(r);
             }
+            if view.flag_owned {
+                ui.label(text("game.flag.owned"));
+            }
         });
         ui.separator();
         ui.heading(text("game.cursors"));
         for (i, c) in view.cursors.iter().enumerate() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let response = ui.label(format!("{} #{}", c.name, c.id));
                 if self.pointer_mode {
-                    response.on_hover_text(format!("Cursor → 0x{:016X}", c.address));
+                    let mut inspect = false;
+                    response.on_hover_ui(|ui| {
+                        ui.label(text("schema.cursor"));
+                        inspect = ui
+                            .link(RichText::new(format!("0x{:016X}", c.address)).monospace())
+                            .clicked();
+                    });
+                    if inspect {
+                        self.jump_to(c.address);
+                    }
                     if ui
                         .link(RichText::new(format!("0x{:016X}", c.address)).monospace())
                         .clicked()
@@ -514,21 +767,17 @@ impl CookieApp {
                 }
                 ui.label(&c.description);
                 if ui.button(text("game.cursor.click")).clicked() {
-                    let r = self.machine.invoke_cursor(i);
-                    self.report(r);
+                    self.invoke_cursor(i);
                 }
                 if ui.button(text("game.cursor.edit")).clicked() {
                     self.cursor_editor = Some(i);
                     self.cursor_name = c.name.clone();
                     self.cursor_description = c.description.clone();
+                    self.jump_to(c.address);
                 }
             });
         }
-        if view.won {
-            ui.separator();
-            ui.heading(text("game.win.title"));
-        }
-        if !self.status.is_empty() {
+        if !self.status.is_empty() && !self.memory_open {
             ui.separator();
             ui.label(&self.status);
         }
@@ -610,7 +859,44 @@ mod tests {
             )
             .unwrap();
         let view = app.safe_view().unwrap();
-        assert_eq!(view.username, "student");
+        assert_eq!(view.username, text("default.username"));
+        assert!(app.status.contains("segmentation fault"));
+    }
+    #[test]
+    fn invalid_function_pointer_restores_last_valid_state() {
+        let mut app = CookieApp::headless(Machine::new(1).unwrap());
+        for _ in 0..10 {
+            app.machine.click().unwrap();
+        }
+        app.machine.buy_cursor().unwrap();
+        app.safe_view().unwrap();
+        let cursor = app.machine.view().unwrap().cursors[0].address;
+        app.machine
+            .write_memory(
+                cursor + cookie_game::cursor_field::ON_CLICKED,
+                &u64::MAX.to_le_bytes(),
+            )
+            .unwrap();
+        app.invoke_cursor(0);
+        assert_eq!(
+            app.machine.view().unwrap().cursors[0].on_clicked,
+            cookie_game::FN_ADD_COOKIE
+        );
+        assert!(app.status.contains("segmentation fault"));
+    }
+    #[test]
+    fn invalid_cursor_data_pointer_restores_last_valid_state() {
+        let mut app = CookieApp::headless(Machine::new(1).unwrap());
+        for _ in 0..10 {
+            app.machine.click().unwrap();
+        }
+        app.machine.buy_cursor().unwrap();
+        let original = app.safe_view().unwrap().cursors[0].clone();
+        let mut overflow = b"12345678".to_vec();
+        overflow.extend(u64::MAX.to_le_bytes());
+        app.machine.rename_cursor(0, &overflow).unwrap();
+        let restored = app.safe_view().unwrap().cursors[0].clone();
+        assert_eq!(restored.description_ptr, original.description_ptr);
         assert!(app.status.contains("segmentation fault"));
     }
 }

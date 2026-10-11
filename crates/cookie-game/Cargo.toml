@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
-thiserror.workspace = true
 vm-core.workspace = true
 vm-heap.workspace = true
 
