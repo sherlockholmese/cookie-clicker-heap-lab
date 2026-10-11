@@ -1,0 +1,23 @@
+# Plain-text cookie sprite. Palette colors use RRGGBBAA.
+size=16x16
+. = 00000000
+o = E2AC61FF
+e = A06630FF
+c = 502F1DFF
+pixels:
+.....eeeeee.....
+...eeooooooee...
+..eooooooooooe..
+.eooocooooocooe.
+.eooooooooooooe.
+eooooooooooooooe
+eoocooooocoooooe
+eooooooooooooooe
+eooooocooooooooe
+eooooooooocooooe
+.eocooooooooooe.
+.eooooooooocooe.
+..eoooocoooooe..
+...eeooooooee...
+.....eeeeee.....
+................

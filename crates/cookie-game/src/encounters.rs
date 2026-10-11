@@ -161,10 +161,6 @@ impl Machine {
                     .saturating_add(initial_delay(self.seed, 71, 180, 300)),
             )?;
         }
-        // Keep intentionally corrupt saves loadable; ordinary old orders gain batch goals.
-        if self.view().is_ok() {
-            self.rebalance_short_generator_order()?;
-        }
         Ok(())
     }
     pub fn encounters_address(&self) -> Result<Address> {

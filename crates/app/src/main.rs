@@ -49,8 +49,9 @@ fn main() -> std::process::ExitCode {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    let window_title = cookie_ui::window_title();
     match eframe::run_native(
-        "Cookie Heap Lab",
+        &window_title,
         options,
         Box::new(move |cc| Ok(Box::new(cookie_ui::CookieApp::new(cc, machine, cli.debug)))),
     ) {

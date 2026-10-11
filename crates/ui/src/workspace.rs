@@ -1,4 +1,4 @@
-use crate::{CookieApp, theme::number};
+use crate::{CookieApp, resources::TextCatalog, theme::number};
 use debugger::{
     ScanFilter, Scanner, ValueType, Watch, diff, parse_hex, parse_u64, pointer_label, unsigned,
 };
@@ -6,7 +6,7 @@ use eframe::egui::{self, Button, RichText, ScrollArea};
 use egui_dock::{DockArea, DockState, TabViewer};
 use vm_core::{Address, Architecture, ExecutionBackend, Memory, RegionKind};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Tab {
     Memory,
     Scanner,
@@ -16,14 +16,14 @@ enum Tab {
     Diff,
 }
 impl Tab {
-    fn title(self) -> &'static str {
+    fn text_key(self) -> &'static str {
         match self {
-            Self::Memory => "Memory",
-            Self::Scanner => "Scanner",
-            Self::Inspector => "Inspector",
-            Self::Watch => "Watch",
-            Self::History => "Write History",
-            Self::Diff => "Memory Diff",
+            Self::Memory => "tool.memory",
+            Self::Scanner => "tool.scanner",
+            Self::Inspector => "tool.inspector",
+            Self::Watch => "tool.watch",
+            Self::History => "tool.history",
+            Self::Diff => "tool.diff",
         }
     }
 }
@@ -33,12 +33,25 @@ enum ScanFormat {
     Text,
     HexBytes,
 }
-impl ScanFormat {
-    fn label(self) -> &'static str {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemoryFormat {
+    Bytes,
+    Qwords,
+}
+impl MemoryFormat {
+    fn row_bytes(self) -> u64 {
         match self {
-            Self::Number => "Number",
-            Self::Text => "Text (UTF-8)",
-            Self::HexBytes => "Hex bytes",
+            Self::Bytes => 16,
+            Self::Qwords => 32,
+        }
+    }
+}
+impl ScanFormat {
+    fn text_key(self) -> &'static str {
+        match self {
+            Self::Number => "scanner.input.number",
+            Self::Text => "scanner.input.text",
+            Self::HexBytes => "scanner.input.hex",
         }
     }
     fn bytes(self, value: &str) -> Result<Vec<u8>, String> {
@@ -78,6 +91,8 @@ pub(crate) struct DebugWorkspace {
     snapshot: Option<Memory>,
     diffs: Vec<debugger::Diff>,
     inline_edit: Option<(Address, String)>,
+    memory_format: MemoryFormat,
+    memory_region: RegionKind,
     scan_format: ScanFormat,
     result_format: ScanFormat,
     result_page: usize,
@@ -111,31 +126,32 @@ impl DebugWorkspace {
             snapshot: None,
             diffs: vec![],
             inline_edit: None,
+            memory_format: MemoryFormat::Bytes,
+            memory_region: RegionKind::Heap,
             scan_format: ScanFormat::Number,
             result_format: ScanFormat::Number,
             result_page: 0,
         }
     }
-    pub(crate) fn menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Memory tools", |ui| {
-            ui.small("Open a tool when you need it. Drag its title to move it.");
-            if ui.button("Find a value…").clicked() {
+    pub(crate) fn menu(&mut self, ui: &mut egui::Ui, text: &TextCatalog) {
+        ui.menu_button(text.get("tools.menu"), |ui| {
+            if ui.button(text.get("tools.find")).clicked() {
                 self.open_tool(Tab::Scanner, ui.ctx());
                 ui.close();
             }
-            if ui.button("Inspect memory…").clicked() {
+            if ui.button(text.get("tools.memory")).clicked() {
                 self.open_tool(Tab::Memory, ui.ctx());
                 ui.close();
             }
-            ui.menu_button("More tools", |ui| {
+            ui.menu_button(text.get("tools.more"), |ui| {
                 for tab in [Tab::Watch, Tab::History, Tab::Diff] {
-                    if ui.button(tab.title()).clicked() {
+                    if ui.button(text.get(tab.text_key())).clicked() {
                         self.open_tool(tab, ui.ctx());
                         ui.close();
                     }
                 }
             });
-            if ui.button("Close all tools").clicked() {
+            if ui.button(text.get("tools.close_all")).clicked() {
                 self.dock = layout();
                 ui.close();
             }
@@ -188,7 +204,7 @@ impl DebugWorkspace {
             .machine
             .memory_regions()
             .iter()
-            .find(|r| r.kind() == RegionKind::Heap && r.contains(a))
+            .find(|r| matches!(r.kind(), RegionKind::Heap | RegionKind::Code) && r.contains(a))
         {
             if a != self.selected {
                 self.back.push(self.selected);
@@ -197,16 +213,17 @@ impl DebugWorkspace {
                 }
             }
             self.pending_tools.push(Tab::Memory);
+            self.memory_region = r.kind();
             self.selected = a;
             self.anchor = a;
             self.selection_end = a;
             self.jump = format!("0x{a:016X}");
             self.inline_edit = None;
-            self.scroll_to = Some(((a - r.base()) / 16) as f32 * 32.0);
+            self.scroll_to = Some(((a - r.base()) / self.memory_format.row_bytes()) as f32 * 32.0);
         } else {
-            app.report::<(), _>(Err(format!(
-                "Memory shows heap addresses only: 0x{a:016X} is outside the heap"
-            )));
+            app.report::<(), _>(Err(
+                app.format_text("memory.outside", &[("address", format!("{a:016X}"))])
+            ));
         }
     }
     fn selection(&self) -> (Address, u64) {
@@ -238,21 +255,46 @@ impl DebugWorkspace {
         }
     }
     fn memory_ui(&mut self, ui: &mut egui::Ui, app: &mut CookieApp) {
+        let text = app.resources.text.clone();
         ui.horizontal_wrapped(|ui| {
-            ui.label("Address");
+            let previous_region = self.memory_region;
+            ui.selectable_value(
+                &mut self.memory_region,
+                RegionKind::Heap,
+                text.get("memory.region.heap"),
+            );
+            ui.selectable_value(
+                &mut self.memory_region,
+                RegionKind::Code,
+                text.get("memory.region.code"),
+            );
+            if previous_region != self.memory_region {
+                let base = match self.memory_region {
+                    RegionKind::Code => Architecture::CODE,
+                    _ => Architecture::HEAP,
+                };
+                self.selected = base;
+                self.anchor = base;
+                self.selection_end = base;
+                self.jump = format!("0x{base:016X}");
+                self.inline_edit = None;
+                self.scroll_to = Some(0.0);
+            }
+            ui.separator();
+            ui.label(text.get("memory.address"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.jump)
                     .desired_width(190.0)
                     .font(egui::TextStyle::Monospace),
             );
-            if ui.button("Go").clicked() {
+            if ui.button(text.get("memory.go")).clicked() {
                 match parse_u64(&self.jump) {
                     Ok(a) => self.navigate(a, app),
                     Err(e) => app.report::<(), _>(Err(e)),
                 }
             }
             if ui
-                .add_enabled(!self.back.is_empty(), Button::new("Back"))
+                .add_enabled(!self.back.is_empty(), Button::new(text.get("memory.back")))
                 .clicked()
                 && let Some(a) = self.back.pop()
             {
@@ -260,11 +302,34 @@ impl DebugWorkspace {
                 self.navigate(a, app);
                 self.back = history;
             }
-            if ui.button("Follow pointer").clicked() {
+            if ui.button(text.get("memory.follow")).clicked() {
                 self.follow(app);
             }
-            if ui.button("Inspector").clicked() {
+            if ui.button(text.get("memory.inspector")).clicked() {
                 self.pending_tools.push(Tab::Inspector);
+            }
+            ui.separator();
+            let old_format = self.memory_format;
+            ui.selectable_value(
+                &mut self.memory_format,
+                MemoryFormat::Bytes,
+                text.get("memory.format.bytes"),
+            );
+            ui.selectable_value(
+                &mut self.memory_format,
+                MemoryFormat::Qwords,
+                text.get("memory.format.qwords"),
+            )
+            .on_hover_text(text.get("memory.format.qwords_hint"));
+            if old_format != self.memory_format {
+                self.inline_edit = None;
+                let region_base = match self.memory_region {
+                    RegionKind::Code => Architecture::CODE,
+                    _ => Architecture::HEAP,
+                };
+                self.scroll_to = Some(
+                    ((self.selected - region_base) / self.memory_format.row_bytes()) as f32 * 32.0,
+                );
             }
         });
         let (start, n) = self.selection();
@@ -272,14 +337,28 @@ impl DebugWorkspace {
             .machine
             .memory_regions()
             .iter()
-            .find(|r| r.kind() == RegionKind::Heap)
+            .find(|r| r.kind() == self.memory_region)
         else {
-            ui.label("No heap memory mapped");
+            ui.label(
+                app.format_text(
+                    "memory.no_region",
+                    &[(
+                        "region",
+                        text.get(match self.memory_region {
+                            RegionKind::Code => "memory.region.code",
+                            _ => "memory.region.heap",
+                        })
+                        .to_owned(),
+                    )],
+                ),
+            );
             return;
         };
         let base = r.base();
         let len = r.len();
-        let rows = len.div_ceil(16) as usize;
+        let writable = r.permissions().write;
+        let row_bytes = self.memory_format.row_bytes();
+        let rows = len.div_ceil(row_bytes) as usize;
         let changed = self
             .snapshot
             .as_ref()
@@ -296,15 +375,15 @@ impl DebugWorkspace {
         if let Some(offset) = self.scroll_to.take() {
             scroll = scroll.vertical_scroll_offset(offset);
         }
-        let mut byte_commit = None;
+        let mut edit_commit = None;
         let mut cancel_edit = false;
         scroll.show_rows(ui, 24.0, rows, |ui, range| {
             ui.set_min_width(740.0);
             ui.spacing_mut().button_padding = egui::Vec2::ZERO;
             ui.spacing_mut().item_spacing.x = 4.0;
             for row in range {
-                let a = base + row as u64 * 16;
-                let count = (len - row as u64 * 16).min(16);
+                let a = base + row as u64 * row_bytes;
+                let count = (len - row as u64 * row_bytes).min(row_bytes);
                 let bytes = match app.machine.read_memory(a, count) {
                     Ok(b) => b,
                     Err(_) => continue,
@@ -315,121 +394,231 @@ impl DebugWorkspace {
                             .monospace()
                             .color(app.theme().muted),
                     );
-                    for (i, b) in bytes.iter().enumerate() {
-                        let addr = a + i as u64;
-                        let selected = addr >= start && addr < start + n;
-                        if i == 8 {
-                            ui.add_space(8.0);
-                        }
-                        let mut text = RichText::new(format!("{b:02X}")).monospace();
-                        if changed.contains(&addr) {
-                            text = text.background_color(app.theme().changed);
-                        }
-                        if let Some((editing, text)) = &mut self.inline_edit
-                            && *editing == addr
-                        {
-                            let id = egui::Id::new(("byte_edit", addr));
+                    if self.memory_format == MemoryFormat::Qwords {
+                        for (i, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+                            let addr = a + i as u64 * 8;
+                            let value = u64::from_le_bytes(*chunk);
+                            let selected = addr < start + n && addr + 8 > start;
+                            let changed_qword =
+                                (0..8).any(|offset| changed.contains(&(addr + offset)));
+                            if let Some((editing, text)) = &mut self.inline_edit
+                                && *editing == addr
+                            {
+                                let id = egui::Id::new(("qword_edit", addr));
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(text)
+                                        .id(id)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_width(142.0)
+                                        .hint_text(format!("{value:016X}"))
+                                        .char_limit(18),
+                                );
+                                if response.has_focus()
+                                    && ui.input(|input| input.key_pressed(egui::Key::Escape))
+                                {
+                                    cancel_edit = true;
+                                } else if response.changed()
+                                    && response.has_focus()
+                                    && qword_bytes(text, true).is_ok()
+                                {
+                                    edit_commit =
+                                        Some((addr, text.clone(), true, MemoryFormat::Qwords));
+                                } else if (response.has_focus()
+                                    && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                                    || response.lost_focus()
+                                {
+                                    edit_commit =
+                                        Some((addr, text.clone(), false, MemoryFormat::Qwords));
+                                }
+                                continue;
+                            }
+                            let mut cell_text = RichText::new(format!("{value:016X}")).monospace();
+                            if changed_qword {
+                                cell_text = cell_text.background_color(app.theme().changed);
+                            }
                             let response = ui.add(
-                                egui::TextEdit::singleline(text)
-                                    .id(id)
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_width(24.0)
-                                    .hint_text(format!("{b:02X}"))
-                                    .char_limit(512),
+                                Button::new(cell_text)
+                                    .selected(selected)
+                                    .frame(selected)
+                                    .min_size(egui::vec2(142.0, 24.0)),
                             );
-                            if response.has_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Escape))
-                            {
-                                cancel_edit = true;
-                            } else if response.changed()
-                                && response.has_focus()
-                                && parse_hex(text).is_ok_and(|b| !b.is_empty())
-                            {
-                                byte_commit = Some((addr, text.clone(), true));
-                            } else if (response.has_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                                || response.lost_focus()
-                            {
-                                byte_commit = Some((addr, text.clone(), false));
-                            }
-                            continue;
-                        }
-                        let response = ui.add(
-                            Button::new(text)
-                                .selected(selected)
-                                .frame(selected)
-                                .min_size(egui::vec2(24.0, 24.0)),
-                        );
-                        if response.clicked() {
-                            if ui.input(|i| i.modifiers.shift) {
-                                self.selection_end = addr;
+                            let response = if writable {
+                                response
                             } else {
-                                self.anchor = addr;
-                                self.selection_end = addr;
-                            }
-                            self.selected = addr;
-                            self.jump = format!("0x{addr:016X}");
-                        }
-                        if response.double_clicked() {
-                            self.inline_edit = Some((addr, String::new()));
-                            ui.memory_mut(|m| m.request_focus(egui::Id::new(("byte_edit", addr))));
-                        }
-                        response.context_menu(|ui| {
-                            if ui.button("Copy address").clicked() {
-                                ui.ctx().copy_text(format!("0x{addr:016X}"));
-                                ui.close();
-                            }
-                            if ui.button("Copy selected bytes").clicked() {
-                                let (a, n) = self.selection();
-                                match app.machine.read_memory(a, n) {
-                                    Ok(bytes) => ui.ctx().copy_text(hex(&bytes)),
-                                    Err(e) => app.report::<(), _>(Err(e)),
+                                response.on_hover_text(text.get("memory.read_only"))
+                            };
+                            if response.clicked() {
+                                self.selected = addr;
+                                if !ui.input(|input| input.modifiers.shift) {
+                                    self.anchor = addr;
                                 }
-                                ui.close();
+                                self.selection_end = addr + 7;
+                                self.jump = format!("0x{addr:016X}");
                             }
-                            if ui.button("Copy pointer value").clicked() {
-                                match app.machine.read_memory(addr, 8) {
-                                    Ok(bytes) => {
-                                        ui.ctx().copy_text(format!("0x{:016X}", unsigned(&bytes)))
-                                    }
-                                    Err(e) => app.report::<(), _>(Err(e)),
-                                }
-                                ui.close();
-                            }
-                            if ui.button("Bookmark address").clicked() {
-                                if !self.bookmarks.contains(&addr) {
-                                    self.bookmarks.push(addr);
-                                }
-                                ui.close();
-                            }
-                            if !self.bookmarks.is_empty() {
-                                ui.menu_button("Bookmarks", |ui| {
-                                    for a in self.bookmarks.clone() {
-                                        if ui.button(format!("{a:016X}")).clicked() {
-                                            self.navigate(a, app);
-                                            ui.close();
-                                        }
-                                    }
+                            if writable && response.double_clicked() {
+                                self.inline_edit = Some((addr, String::new()));
+                                ui.memory_mut(|memory| {
+                                    memory.request_focus(egui::Id::new(("qword_edit", addr)))
                                 });
                             }
-                            if ui.button("Inspect byte").clicked() {
-                                self.selected = addr;
-                                self.anchor = addr;
-                                self.selection_end = addr;
-                                self.pending_tools.push(Tab::Inspector);
-                                ui.close();
+                            response.context_menu(|ui| {
+                                if ui.button(text.get("memory.copy_address")).clicked() {
+                                    ui.ctx().copy_text(format!("0x{addr:016X}"));
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.copy_qword")).clicked() {
+                                    ui.ctx().copy_text(format!("0x{value:016X}"));
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.bookmark")).clicked() {
+                                    if !self.bookmarks.contains(&addr) {
+                                        self.bookmarks.push(addr);
+                                    }
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.inspect_qword")).clicked() {
+                                    self.selected = addr;
+                                    self.pending_tools.push(Tab::Inspector);
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.follow_qword")).clicked() {
+                                    self.selected = addr;
+                                    self.follow(app);
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.watch_u64")).clicked() {
+                                    self.selected = addr;
+                                    self.add_watch(ValueType::U64);
+                                    ui.close();
+                                }
+                            });
+                        }
+                    } else {
+                        for (i, b) in bytes.iter().enumerate() {
+                            let addr = a + i as u64;
+                            let selected = addr >= start && addr < start + n;
+                            if i == 8 {
+                                ui.add_space(8.0);
                             }
-                            if ui.button("Follow as 8-byte pointer").clicked() {
-                                self.selected = addr;
-                                self.follow(app);
-                                ui.close();
+                            let mut cell_text = RichText::new(format!("{b:02X}")).monospace();
+                            if changed.contains(&addr) {
+                                cell_text = cell_text.background_color(app.theme().changed);
                             }
-                            if ui.button("Watch as u64").clicked() {
-                                self.selected = addr;
-                                self.add_watch(ValueType::U64);
-                                ui.close();
+                            if let Some((editing, text)) = &mut self.inline_edit
+                                && *editing == addr
+                            {
+                                let id = egui::Id::new(("byte_edit", addr));
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(text)
+                                        .id(id)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_width(24.0)
+                                        .hint_text(format!("{b:02X}"))
+                                        .char_limit(512),
+                                );
+                                if response.has_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Escape))
+                                {
+                                    cancel_edit = true;
+                                } else if response.changed()
+                                    && response.has_focus()
+                                    && parse_hex(text).is_ok_and(|b| !b.is_empty())
+                                {
+                                    edit_commit =
+                                        Some((addr, text.clone(), true, MemoryFormat::Bytes));
+                                } else if (response.has_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                    || response.lost_focus()
+                                {
+                                    edit_commit =
+                                        Some((addr, text.clone(), false, MemoryFormat::Bytes));
+                                }
+                                continue;
                             }
-                        });
+                            let response = ui.add(
+                                Button::new(cell_text)
+                                    .selected(selected)
+                                    .frame(selected)
+                                    .min_size(egui::vec2(24.0, 24.0)),
+                            );
+                            let response = if writable {
+                                response
+                            } else {
+                                response.on_hover_text(text.get("memory.read_only"))
+                            };
+                            if response.clicked() {
+                                if ui.input(|i| i.modifiers.shift) {
+                                    self.selection_end = addr;
+                                } else {
+                                    self.anchor = addr;
+                                    self.selection_end = addr;
+                                }
+                                self.selected = addr;
+                                self.jump = format!("0x{addr:016X}");
+                            }
+                            if writable && response.double_clicked() {
+                                self.inline_edit = Some((addr, String::new()));
+                                ui.memory_mut(|m| {
+                                    m.request_focus(egui::Id::new(("byte_edit", addr)))
+                                });
+                            }
+                            response.context_menu(|ui| {
+                                if ui.button(text.get("memory.copy_address")).clicked() {
+                                    ui.ctx().copy_text(format!("0x{addr:016X}"));
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.copy_selected")).clicked() {
+                                    let (a, n) = self.selection();
+                                    match app.machine.read_memory(a, n) {
+                                        Ok(bytes) => ui.ctx().copy_text(hex(&bytes)),
+                                        Err(e) => app.report::<(), _>(Err(e)),
+                                    }
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.copy_pointer")).clicked() {
+                                    match app.machine.read_memory(addr, 8) {
+                                        Ok(bytes) => ui
+                                            .ctx()
+                                            .copy_text(format!("0x{:016X}", unsigned(&bytes))),
+                                        Err(e) => app.report::<(), _>(Err(e)),
+                                    }
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.bookmark")).clicked() {
+                                    if !self.bookmarks.contains(&addr) {
+                                        self.bookmarks.push(addr);
+                                    }
+                                    ui.close();
+                                }
+                                if !self.bookmarks.is_empty() {
+                                    ui.menu_button(text.get("memory.bookmarks"), |ui| {
+                                        for a in self.bookmarks.clone() {
+                                            if ui.button(format!("{a:016X}")).clicked() {
+                                                self.navigate(a, app);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+                                if ui.button(text.get("memory.inspect_byte")).clicked() {
+                                    self.selected = addr;
+                                    self.anchor = addr;
+                                    self.selection_end = addr;
+                                    self.pending_tools.push(Tab::Inspector);
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.follow_qword")).clicked() {
+                                    self.selected = addr;
+                                    self.follow(app);
+                                    ui.close();
+                                }
+                                if ui.button(text.get("memory.watch_u64")).clicked() {
+                                    self.selected = addr;
+                                    self.add_watch(ValueType::U64);
+                                    ui.close();
+                                }
+                            });
+                        }
                     }
                     ui.label(
                         RichText::new(
@@ -451,12 +640,16 @@ impl DebugWorkspace {
         });
         if cancel_edit {
             self.inline_edit = None;
-        } else if let Some((address, text, advance)) = byte_commit {
+        } else if let Some((address, text, advance, format)) = edit_commit {
             if text.trim().is_empty() {
                 self.inline_edit = None;
                 return;
             }
-            let r = parse_hex(&text).and_then(|bytes| {
+            let r = match format {
+                MemoryFormat::Bytes => parse_hex(&text),
+                MemoryFormat::Qwords => qword_bytes(&text, false),
+            }
+            .and_then(|bytes| {
                 if bytes.is_empty() {
                     Err("enter pairs of hex digits".into())
                 } else {
@@ -464,7 +657,10 @@ impl DebugWorkspace {
                 }
             });
             if r.is_ok() {
-                let count = parse_hex(&text).expect("already validated").len() as u64;
+                let count = match format {
+                    MemoryFormat::Bytes => parse_hex(&text).expect("already validated").len(),
+                    MemoryFormat::Qwords => 8,
+                } as u64;
                 self.anchor = address;
                 self.selection_end = address + count - 1;
                 self.inline_edit = None;
@@ -476,13 +672,21 @@ impl DebugWorkspace {
                     self.selection_end = next;
                     self.jump = format!("0x{next:016X}");
                     self.inline_edit = Some((next, String::new()));
-                    if (next - base) / 16 != (address - base) / 16 {
-                        self.scroll_to = Some(((next - base) / 16) as f32 * 32.0);
+                    if (next - base) / row_bytes != (address - base) / row_bytes {
+                        self.scroll_to = Some(((next - base) / row_bytes) as f32 * 32.0);
                     }
-                    ui.memory_mut(|m| m.request_focus(egui::Id::new(("byte_edit", next))));
+                    let edit_kind = match format {
+                        MemoryFormat::Bytes => "byte_edit",
+                        MemoryFormat::Qwords => "qword_edit",
+                    };
+                    ui.memory_mut(|m| m.request_focus(egui::Id::new((edit_kind, next))));
                 }
             } else {
-                ui.memory_mut(|m| m.request_focus(egui::Id::new(("byte_edit", address))));
+                let edit_kind = match format {
+                    MemoryFormat::Bytes => "byte_edit",
+                    MemoryFormat::Qwords => "qword_edit",
+                };
+                ui.memory_mut(|m| m.request_focus(egui::Id::new((edit_kind, address))));
             }
             app.report(r);
         }
@@ -530,20 +734,21 @@ impl DebugWorkspace {
         }
     }
     fn scanner_ui(&mut self, ui: &mut egui::Ui, app: &mut CookieApp) {
+        let text = app.resources.text.clone();
         ui.horizontal(|ui| {
-            ui.label("Find");
+            ui.label(text.get("scanner.find"));
             egui::ComboBox::from_id_salt("scan_format")
-                .selected_text(self.scan_format.label())
+                .selected_text(text.get(self.scan_format.text_key()))
                 .show_ui(ui, |ui| {
                     for kind in [ScanFormat::Number, ScanFormat::Text, ScanFormat::HexBytes] {
-                        ui.selectable_value(&mut self.scan_format, kind, kind.label());
+                        ui.selectable_value(&mut self.scan_format, kind, text.get(kind.text_key()));
                     }
                 });
         });
         let hint = match self.scan_format {
-            ScanFormat::Number => "127, 0x7F, or 0b1111111",
-            ScanFormat::Text => "Crumb & Co.",
-            ScanFormat::HexBytes => "20 31 01 00",
+            ScanFormat::Number => text.get("scanner.hint.number"),
+            ScanFormat::Text => text.get("scanner.hint.text"),
+            ScanFormat::HexBytes => text.get("scanner.hint.hex"),
         };
         ui.add(
             egui::TextEdit::singleline(&mut self.scan_value)
@@ -551,41 +756,47 @@ impl DebugWorkspace {
                 .desired_width(f32::INFINITY),
         );
         ui.small(match self.scan_format {
-            ScanFormat::Number => "Decimal, 0x hex, and 0b binary describe the same number.",
-            ScanFormat::Text => "Search the exact UTF-8 bytes of a name or label.",
-            ScanFormat::HexBytes => "Search bytes in the order written, separated by spaces.",
+            ScanFormat::Number => text.get("scanner.help.number"),
+            ScanFormat::Text => text.get("scanner.help.text"),
+            ScanFormat::HexBytes => text.get("scanner.help.hex"),
         });
         ui.horizontal_wrapped(|ui| {
-            if ui.button("First scan").clicked() {
+            if ui.button(text.get("scanner.first")).clicked() {
                 let r = self.first_scan(app);
                 app.report(r);
             }
             if ui
-                .add_enabled(self.scanner.initialized, Button::new("Narrow results"))
+                .add_enabled(
+                    self.scanner.initialized,
+                    Button::new(text.get("scanner.next")),
+                )
                 .clicked()
             {
                 let r = self.narrow_scan(app);
                 app.report(r);
             }
-            if ui.button("Reset").clicked() {
+            if ui.button(text.get("scanner.reset")).clicked() {
                 self.scanner = Scanner::default();
             }
         });
-        ui.collapsing("Scan options", |ui| {
+        ui.collapsing(text.get("scanner.options"), |ui| {
             if self.scan_format == ScanFormat::Number {
                 egui::ComboBox::from_id_salt("scan_width")
-                    .selected_text(format!("{}-bit unsigned", self.scan_width * 8))
+                    .selected_text(text.format(
+                        "scanner.width",
+                        &[("bits", (self.scan_width * 8).to_string())],
+                    ))
                     .show_ui(ui, |ui| {
                         for width in [1, 2, 4, 8] {
                             ui.selectable_value(
                                 &mut self.scan_width,
                                 width,
-                                format!("{}-bit unsigned", width * 8),
+                                text.format("scanner.width", &[("bits", (width * 8).to_string())]),
                             );
                         }
                     });
-                ui.checkbox(&mut self.scan_aligned, "Aligned addresses");
-                ui.checkbox(&mut self.scan_unknown, "Unknown initial value");
+                ui.checkbox(&mut self.scan_aligned, text.get("scanner.aligned"));
+                ui.checkbox(&mut self.scan_unknown, text.get("scanner.unknown"));
             }
             egui::ComboBox::from_id_salt("scan_filter")
                 .selected_text(self.scan_filter.label())
@@ -607,22 +818,19 @@ impl DebugWorkspace {
                 });
         });
         if !self.scanner.initialized {
-            ui.label(
-                RichText::new("Enter a value you can see in the game, then run First scan.")
-                    .color(app.theme().muted),
-            );
+            ui.label(RichText::new(text.get("scanner.start_help")).color(app.theme().muted));
             return;
         }
-        ui.small("Change the game value, enter its new value above, then narrow the results.");
+        ui.small(text.get("scanner.narrow_help"));
         ui.label(
-            RichText::new(format!(
-                "{} matches",
-                number(self.scanner.results.len() as u64)
+            RichText::new(text.format(
+                "scanner.matches",
+                &[("count", number(self.scanner.results.len() as u64))],
             ))
             .strong(),
         );
         if self.scanner.results.is_empty() {
-            ui.label("No matches. Check the input and start a new scan.");
+            ui.label(text.get("scanner.empty"));
             return;
         }
         ScrollArea::both()
@@ -634,8 +842,8 @@ impl DebugWorkspace {
                     .striped(true)
                     .spacing(egui::vec2(16.0, 8.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Guest address").strong());
-                        ui.label(RichText::new("Current value").strong());
+                        ui.label(RichText::new(text.get("scanner.address")).strong());
+                        ui.label(RichText::new(text.get("scanner.current")).strong());
                         ui.label("");
                         ui.end_row();
                         // Keep the table bounded while scans retain every match. Paging is explicit.
@@ -649,7 +857,7 @@ impl DebugWorkspace {
                                 .machine
                                 .read_memory(a, self.scanner.width as u64)
                                 .map(|b| self.result_format.display(&b))
-                                .unwrap_or_else(|_| "Unreadable".into());
+                                .unwrap_or_else(|_| text.get("scanner.unreadable").into());
                             if ui
                                 .selectable_label(
                                     self.selected == a,
@@ -661,7 +869,7 @@ impl DebugWorkspace {
                             }
                             ui.add(egui::Label::new(current.clone()).truncate())
                                 .on_hover_text(current);
-                            if ui.button("Inspect").clicked() {
+                            if ui.button(text.get("scanner.inspect")).clicked() {
                                 self.navigate(a, app);
                             }
                             ui.end_row();
@@ -671,14 +879,26 @@ impl DebugWorkspace {
         let pages = self.scanner.results.len().div_ceil(100);
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(self.result_page > 0, Button::new("Previous"))
+                .add_enabled(
+                    self.result_page > 0,
+                    Button::new(text.get("scanner.previous_page")),
+                )
                 .clicked()
             {
                 self.result_page -= 1;
             }
-            ui.label(format!("Page {} of {}", self.result_page + 1, pages));
+            ui.label(text.format(
+                "scanner.page",
+                &[
+                    ("current", (self.result_page + 1).to_string()),
+                    ("total", pages.to_string()),
+                ],
+            ));
             if ui
-                .add_enabled(self.result_page + 1 < pages, Button::new("Next"))
+                .add_enabled(
+                    self.result_page + 1 < pages,
+                    Button::new(text.get("scanner.next_page")),
+                )
                 .clicked()
             {
                 self.result_page += 1;
@@ -686,6 +906,12 @@ impl DebugWorkspace {
         });
     }
     fn inspector_ui(&mut self, ui: &mut egui::Ui, app: &mut CookieApp) {
+        let text = app.resources.text.clone();
+        let region = app
+            .machine
+            .memory_regions()
+            .iter()
+            .find(|region| region.contains(self.selected));
         let allocation = app
             .machine
             .allocations()
@@ -696,44 +922,67 @@ impl DebugWorkspace {
             .num_columns(2)
             .spacing(egui::vec2(16.0, 6.0))
             .show(ui, |ui| {
-                ui.label("Address");
+                ui.label(text.get("inspector.address"));
                 ui.monospace(format!("0x{:016X}", self.selected));
                 ui.end_row();
-                ui.label("Allocation");
+                ui.label(text.get("inspector.region_label"));
+                if let Some(region) = region {
+                    ui.label(text.format(
+                        "inspector.region",
+                        &[
+                            ("kind", format!("{:?}", region.kind())),
+                            ("permissions", region.permissions().label()),
+                        ],
+                    ));
+                } else {
+                    ui.label(text.get("inspector.unmapped"));
+                }
+                ui.end_row();
+                ui.label(text.get("inspector.allocation_label"));
                 if let Some(a) = allocation {
-                    ui.label(format!(
-                        "#{} · offset +0x{:X}",
-                        a.id,
-                        self.selected - a.base
+                    ui.label(text.format(
+                        "inspector.allocation",
+                        &[
+                            ("id", a.id.to_string()),
+                            ("offset", format!("{:X}", self.selected - a.base)),
+                        ],
                     ));
                 } else {
                     ui.label(pointer_label(self.selected, app.machine.allocations()));
                 }
                 ui.end_row();
                 if let Some(a) = allocation {
-                    ui.label("Size");
-                    ui.label(format!(
-                        "{} bytes · generation {}",
-                        number(a.size),
-                        a.generation
+                    ui.label(text.get("inspector.size"));
+                    ui.label(text.format(
+                        "inspector.allocation_detail",
+                        &[
+                            ("size", number(a.size)),
+                            ("generation", a.generation.to_string()),
+                        ],
                     ));
                     ui.end_row();
-                    ui.label("Range")
-                        .on_hover_text("The ending address is exclusive");
+                    ui.label(text.get("inspector.range"))
+                        .on_hover_text(text.get("inspector.range_hint"));
                     ui.vertical(|ui| {
                         ui.monospace(format!("0x{:016X}", a.base));
-                        ui.monospace(format!("to 0x{:016X}", a.end()));
+                        ui.monospace(
+                            text.format(
+                                "inspector.to",
+                                &[("address", format!("{:016X}", a.end()))],
+                            ),
+                        );
                     });
                     ui.end_row();
                     if self.symbols {
-                        ui.label("Object");
+                        ui.label(text.get("inspector.object"));
                         ui.label(&a.semantic_type);
                         ui.end_row();
                     }
                 }
             });
-        ui.checkbox(&mut self.symbols, "Show object names").on_hover_text("Reveal simulator object names such as PlayerState or Generator[] for the selected allocation.");
-        if ui.button("Follow 8-byte pointer").clicked() {
+        ui.checkbox(&mut self.symbols, text.get("inspector.show_objects"))
+            .on_hover_text(text.get("inspector.show_objects_hint"));
+        if ui.button(text.get("inspector.follow")).clicked() {
             self.follow(app);
         }
         ui.add_space(8.0);
@@ -742,8 +991,8 @@ impl DebugWorkspace {
             .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
-                ui.label(RichText::new("Type").strong());
-                ui.label(RichText::new("Value").strong());
+                ui.label(RichText::new(text.get("inspector.type")).strong());
+                ui.label(RichText::new(text.get("inspector.value")).strong());
                 ui.end_row();
                 for kind in ValueType::ALL {
                     ui.label(kind.label());
@@ -752,7 +1001,7 @@ impl DebugWorkspace {
                             ui.label(kind.interpret(&b).unwrap_or_else(|e| e));
                         }
                         Err(_) => {
-                            ui.label("Unreadable");
+                            ui.label(text.get("inspector.unreadable"));
                         }
                     }
                     ui.end_row();
@@ -760,21 +1009,23 @@ impl DebugWorkspace {
             });
         ui.add_space(16.0);
         ui.add(
-            egui::TextEdit::singleline(&mut self.watch_name).hint_text("Watch label (optional)"),
+            egui::TextEdit::singleline(&mut self.watch_name)
+                .hint_text(text.get("watch.label_hint")),
         );
-        if ui.button("Add u64 watch").clicked() {
+        if ui.button(text.get("watch.add")).clicked() {
             self.add_watch(ValueType::U64);
         }
     }
     fn watch_ui(&mut self, ui: &mut egui::Ui, app: &mut CookieApp) {
+        let text = app.resources.text.clone();
         if self.watches.is_empty() {
-            ui.label("No watches. Select a byte in Memory, open Inspector, then add a watch.");
+            ui.label(text.get("watch.empty"));
         }
         let mut remove = None;
         ScrollArea::both().id_salt("watches").show(ui, |ui| {
             for (i, w) in self.watches.clone().iter().enumerate() {
                 ui.horizontal(|ui| {
-                    if ui.button("Remove").clicked() {
+                    if ui.button(text.get("watch.remove")).clicked() {
                         remove = Some(i);
                     }
                     if ui
@@ -787,11 +1038,20 @@ impl DebugWorkspace {
                         self.navigate(w.address, app);
                     }
                 });
-                ui.label(format!(
-                    "{} · {} · {}",
-                    w.name,
-                    w.kind.label(),
-                    w.value(&app.machine).unwrap_or_else(|e| e)
+                ui.label(text.format(
+                    "watch.row",
+                    &[
+                        ("address", format!("{:016X}", w.address)),
+                        ("name", w.name.clone()),
+                        (
+                            "value",
+                            format!(
+                                "{} · {}",
+                                w.kind.label(),
+                                w.value(&app.machine).unwrap_or_else(|e| e)
+                            ),
+                        ),
+                    ],
                 ));
                 ui.add_space(8.0);
             }
@@ -801,9 +1061,10 @@ impl DebugWorkspace {
         }
     }
     fn history_ui(&mut self, ui: &mut egui::Ui, app: &mut CookieApp) {
-        ui.label("Recent writes · last 512 operations · newest first");
+        let text = app.resources.text.clone();
+        ui.label(text.get("history.heading"));
         if app.machine.memory.events().is_empty() {
-            ui.label("No writes yet. Play the game or edit guest memory.");
+            ui.label(text.get("history.empty"));
         }
         let events = app
             .machine
@@ -813,41 +1074,114 @@ impl DebugWorkspace {
             .rev()
             .cloned()
             .collect::<Vec<_>>();
-        ScrollArea::both().id_salt("write_history").show(ui,|ui|{
-            for (i,e) in events.iter().enumerate(){ui.push_id(i,|ui|{
-                let title=format!("tick {} · {:?} · {} · {} bytes{}",e.tick,e.source,e.operation,e.new.len(),if e.overflow>0{format!(" · ALLOCATION OVERFLOW {} bytes",e.overflow)}else if e.semantic_overflow>0{format!(" · FIELD OVERFLOW {} bytes",e.semantic_overflow)}else{String::new()});
-                egui::CollapsingHeader::new(RichText::new(title).color(if e.overflow>0||e.semantic_overflow>0{app.theme().danger}else{app.theme().text})).show(ui,|ui|{
-                    if ui.button(format!("Jump to 0x{:016X}",e.address)).clicked(){self.navigate(e.address,app);}
-                    if let Some(boundary)=e.semantic_boundary{ui.monospace(format!("Intended field ends at {boundary:016X} · {} bytes beyond it",e.semantic_overflow));}
-                    ui.label(format!("Origin allocation: {:?} · affected: {:?}",e.origin,e.affected));
-                    if let Some(id)=e.origin && let Some(a)=app.machine.allocations().iter().find(|a|a.id==id){ui.monospace(format!("Intended range {:016X} .. {:016X}",a.base,a.end()));}
-                    ui.monospace(format!("Old: {}",hex(&e.old[..e.old.len().min(128)])));ui.monospace(format!("New: {}",hex(&e.new[..e.new.len().min(128)])));
-                    if e.new.len()>128{ui.small("Byte preview shows the first 128 bytes. Inspect the full range in Memory.");}
+        ScrollArea::both().id_salt("write_history").show(ui, |ui| {
+            for (i, e) in events.iter().enumerate() {
+                ui.push_id(i, |ui| {
+                    let overflow = if e.overflow > 0 {
+                        text.format(
+                            "history.allocation_overflow",
+                            &[("count", e.overflow.to_string())],
+                        )
+                    } else if e.semantic_overflow > 0 {
+                        text.format(
+                            "history.field_overflow",
+                            &[("count", e.semantic_overflow.to_string())],
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let title = text.format(
+                        "history.title",
+                        &[
+                            ("tick", e.tick.to_string()),
+                            ("source", format!("{:?}", e.source)),
+                            ("operation", e.operation.clone()),
+                            ("count", e.new.len().to_string()),
+                            ("overflow", overflow),
+                        ],
+                    );
+                    egui::CollapsingHeader::new(RichText::new(title).color(
+                        if e.overflow > 0 || e.semantic_overflow > 0 {
+                            app.theme().danger
+                        } else {
+                            app.theme().text
+                        },
+                    ))
+                    .show(ui, |ui| {
+                        if ui
+                            .button(text.format(
+                                "history.jump",
+                                &[("address", format!("{:016X}", e.address))],
+                            ))
+                            .clicked()
+                        {
+                            self.navigate(e.address, app);
+                        }
+                        if let Some(boundary) = e.semantic_boundary {
+                            ui.monospace(text.format(
+                                "history.field_end",
+                                &[
+                                    ("address", format!("{boundary:016X}")),
+                                    ("count", e.semantic_overflow.to_string()),
+                                ],
+                            ));
+                        }
+                        ui.label(text.format(
+                            "history.origin",
+                            &[
+                                ("origin", format!("{:?}", e.origin)),
+                                ("affected", format!("{:?}", e.affected)),
+                            ],
+                        ));
+                        if let Some(id) = e.origin
+                            && let Some(a) = app.machine.allocations().iter().find(|a| a.id == id)
+                        {
+                            ui.monospace(text.format(
+                                "history.intended",
+                                &[
+                                    ("start", format!("{:016X}", a.base)),
+                                    ("end", format!("{:016X}", a.end())),
+                                ],
+                            ));
+                        }
+                        ui.monospace(text.format(
+                            "history.old",
+                            &[("bytes", hex(&e.old[..e.old.len().min(128)]))],
+                        ));
+                        ui.monospace(text.format(
+                            "history.new",
+                            &[("bytes", hex(&e.new[..e.new.len().min(128)]))],
+                        ));
+                        if e.new.len() > 128 {
+                            ui.small(text.get("history.preview"));
+                        }
+                    });
                 });
-            });}
+            }
         });
     }
     fn diff_ui(&mut self, ui: &mut egui::Ui, app: &mut CookieApp) {
+        let text = app.resources.text.clone();
         ui.horizontal(|ui| {
-            if ui.button("Take snapshot").clicked() {
+            if ui.button(text.get("diff.take")).clicked() {
                 self.snapshot = Some(app.machine.memory.snapshot());
                 self.diffs.clear();
             }
             if ui
-                .add_enabled(self.snapshot.is_some(), Button::new("Compare"))
+                .add_enabled(
+                    self.snapshot.is_some(),
+                    Button::new(text.get("diff.compare")),
+                )
                 .clicked()
             {
                 self.diffs = diff(self.snapshot.as_ref().unwrap(), &app.machine);
             }
         });
         if self.snapshot.is_none() {
-            ui.label("Take a snapshot, play the game, then compare. Memory highlights changed bytes while a snapshot exists.");
+            ui.label(text.get("diff.help"));
             return;
         }
-        ui.label(format!(
-            "{} changed bytes at last comparison",
-            number(self.diffs.len() as u64)
-        ));
+        ui.label(text.format("diff.count", &[("count", number(self.diffs.len() as u64))]));
         ScrollArea::both().id_salt("diff_rows").show_rows(
             ui,
             32.0,
@@ -875,10 +1209,10 @@ struct Viewer<'a> {
 impl TabViewer for Viewer<'_> {
     type Tab = Tab;
     fn id(&mut self, tab: &mut Tab) -> egui::Id {
-        egui::Id::new(tab.title())
+        egui::Id::new(*tab)
     }
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
-        tab.title().into()
+        self.app.text(tab.text_key()).into()
     }
     fn is_closeable(&self, _: &Tab) -> bool {
         true
@@ -909,6 +1243,15 @@ fn hex(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02X}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+fn qword_bytes(text: &str, require_full_width: bool) -> Result<Vec<u8>, String> {
+    let digits = text.trim().strip_prefix("0x").unwrap_or(text.trim());
+    if digits.is_empty() || digits.len() > 16 || (require_full_width && digits.len() != 16) {
+        return Err("enter up to 16 hexadecimal digits".into());
+    }
+    let value = u64::from_str_radix(digits, 16)
+        .map_err(|_| "qword contains a non-hexadecimal digit".to_string())?;
+    Ok(value.to_le_bytes().to_vec())
 }
 
 #[cfg(test)]
@@ -1023,16 +1366,59 @@ mod tests {
         assert!(!app.error);
     }
     #[test]
-    fn memory_stays_in_heap_and_opens_a_read_only_inspector() {
+    fn qword_mode_displays_and_writes_little_endian_values() {
+        let ctx = egui::Context::default();
+        let mut app = CookieApp::headless(cookie_game::Machine::new(1).unwrap(), true);
+        app.theme().apply(&ctx, false);
+        frame(&ctx, &mut app, vec![]);
+        let address = Architecture::HEAP;
+        app.machine
+            .write_memory(address, &0x1122_3344_5566_7788u64.to_le_bytes())
+            .unwrap();
+        let mut workspace = app.debugger.take().unwrap();
+        workspace.memory_format = MemoryFormat::Qwords;
+        workspace.open_tool(Tab::Memory, &ctx);
+        workspace.inline_edit = Some((address, String::new()));
+        app.debugger = Some(workspace);
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        ctx.memory_mut(|memory| memory.request_focus(egui::Id::new(("qword_edit", address))));
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("0102030405060708".into())],
+        );
+        assert_eq!(
+            app.machine.read_memory(address, 8).unwrap(),
+            vec![0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+        );
+        assert_eq!(app.debugger.as_ref().unwrap().selected, address + 8);
+        assert_eq!(
+            qword_bytes("0x1122334455667788", false).unwrap(),
+            vec![0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]
+        );
+    }
+    #[test]
+    fn memory_shows_heap_and_code_and_opens_a_read_only_inspector() {
         let ctx = egui::Context::default();
         let mut app = CookieApp::headless(cookie_game::Machine::new(1).unwrap(), true);
         app.theme().apply(&ctx, false);
         frame(&ctx, &mut app, vec![]);
         let mut workspace = app.debugger.take().unwrap();
         workspace.open_tool(Tab::Memory, &ctx);
+        workspace.navigate(Architecture::CODE, &mut app);
+        assert_eq!(workspace.selected, Architecture::CODE);
+        assert_eq!(workspace.memory_region, RegionKind::Code);
+        assert!(!app.error);
+        assert!(
+            app.machine
+                .read_memory(Architecture::CODE + 0x100, 8)
+                .is_ok()
+        );
         workspace.navigate(Architecture::GLOBALS, &mut app);
-        assert_eq!(workspace.selected, Architecture::HEAP);
+        assert_eq!(workspace.selected, Architecture::CODE);
         assert!(app.error);
+        workspace.navigate(Architecture::HEAP, &mut app);
         app.debugger = Some(workspace);
         crate::tests::click_label(&ctx, &mut app, "Inspector");
         assert!(

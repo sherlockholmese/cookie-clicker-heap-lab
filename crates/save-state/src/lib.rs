@@ -13,7 +13,7 @@ use vm_core::ExecutionBackend;
 
 pub const MAGIC: [u8; 8] = *b"CHLS64\r\n";
 pub const FORMAT_VERSION: u32 = 1;
-pub const COMPATIBILITY_VERSION: u32 = 3;
+pub const COMPATIBILITY_VERSION: u32 = 4;
 pub const MAX_FILE_SIZE: u64 = 32 * 1024 * 1024;
 const HEADER_SIZE: usize = 36;
 #[derive(Debug, Error)]
@@ -108,6 +108,17 @@ pub fn decode(data: &[u8]) -> Result<Machine, SaveError> {
         snapshot
             .machine
             .initialize_encounters()
+            .map_err(|e| SaveError::Invalid(e.to_string()))?;
+        snapshot.machine.memory.clear_events();
+        snapshot
+            .machine
+            .validate()
+            .map_err(|e| SaveError::Invalid(e.to_string()))?;
+    }
+    if compatibility < 4 {
+        snapshot
+            .machine
+            .initialize_shutdown_callbacks()
             .map_err(|e| SaveError::Invalid(e.to_string()))?;
         snapshot.machine.memory.clear_events();
         snapshot
@@ -251,7 +262,26 @@ mod tests {
         assert!(restored.view().is_err());
     }
     #[test]
-    fn active_rush_recipes_and_order_rng_resume_exactly() {
+    fn compatibility_three_save_gains_shutdown_callbacks() {
+        let mut legacy = Machine::new(3).unwrap();
+        legacy
+            .write_memory(vm_core::Architecture::GLOBALS + 24, &0u64.to_le_bytes())
+            .unwrap();
+        let mut bytes = encode(&legacy).unwrap();
+        bytes[12..16].copy_from_slice(&3u32.to_le_bytes());
+        let mut migrated = decode(&bytes).unwrap();
+        let handlers = migrated.shutdown_callbacks_address().unwrap();
+        assert_eq!(
+            migrated.memory.read_ptr64(handlers).unwrap(),
+            cookie_game::SHUTDOWN_AUDIT_VTABLE
+        );
+        assert_eq!(
+            migrated.run_shutdown_callbacks().unwrap(),
+            cookie_game::ShutdownOutcome::Close
+        );
+    }
+    #[test]
+    fn active_rush_and_recipes_resume_exactly() {
         let mut original = Machine::new(1234).unwrap();
         for _ in 0..40 {
             original.click().unwrap();
@@ -284,8 +314,6 @@ mod tests {
                 machine.click().unwrap();
             }
             machine.claim_rush().unwrap();
-            machine.claim_order(1).unwrap();
-            machine.claim_order(0).unwrap();
             machine.select_recipe(2).unwrap();
             for _ in 0..250 {
                 machine.advance_tick().unwrap();
@@ -293,7 +321,6 @@ mod tests {
         }
         assert_eq!(original.snapshot(), loaded.snapshot());
         assert_eq!(loaded.activities_view().unwrap().rush_wins, 1);
-        assert_eq!(loaded.activities_view().unwrap().orders_done, 2);
     }
     #[test]
     fn legacy_save_adds_activities_without_changing_existing_state() {
@@ -308,12 +335,7 @@ mod tests {
         }
         let root = vm_core::Architecture::GLOBALS + 8;
         let a = legacy.activities_address().unwrap();
-        let orders = legacy
-            .memory
-            .read_ptr64(a + cookie_game::activity_field::ORDERS)
-            .unwrap();
         // Recreate a version-one snapshot with no activities root or live activity objects.
-        legacy.heap.free(orders).unwrap();
         legacy.heap.free(a).unwrap();
         legacy.write_memory(root, &0u64.to_le_bytes()).unwrap();
         let mut bytes = encode(&legacy).unwrap();
@@ -335,7 +357,7 @@ mod tests {
                     .unwrap()
             );
         }
-        assert_eq!(migrated.activities_view().unwrap().orders[0].progress, 0);
+        assert_eq!(migrated.activities_view().unwrap().recipe, 0);
         assert_eq!(
             decode(&encode(&migrated).unwrap()).unwrap().snapshot(),
             migrated.snapshot()

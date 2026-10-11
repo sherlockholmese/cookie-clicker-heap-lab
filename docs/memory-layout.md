@@ -4,17 +4,25 @@ All addresses are 64-bit values; all multibyte fields use little-endian encoding
 
 | Region | Start | Size | Permissions |
 | --- | --- | --- | --- |
-| Code, reserved for a future backend | `0x0000000000400000` | 4096 | R-X |
+| Code | `0x0000000000400000` | 4096 | R-X |
 | Read-only data | `0x0000000001000000` | 4096 | R-- |
 | Globals | `0x0000000002000000` | 4096 | RW- |
 | Heap | `0x0000555500000000` | 65536 | RW- |
 | Stack, reserved | `0x00007FFFFFFFE000` | 4096 | RW- |
 
-Globals +0 contains the eight-byte player root pointer. Globals +8 contains the bakery activities pointer; globals +16 contains the bakery visitors pointer. Null and the unmapped gaps fault.
+Globals +0 contains the eight-byte player root pointer. Globals +8 contains the bakery activities pointer, globals +16 contains the bakery visitors pointer, and globals +24 contains the shutdown callback array pointer. Null and the unmapped gaps fault.
 
 ## Fresh allocation order
 
-PlayerName occupies heap +0 through +31. PlayerState immediately follows at heap +32 and occupies 136 bytes. Generator[], Upgrade[], Achievement[], Statistics, TemporaryEffects, ShopState, PrestigeState, RecipeBonus, LuckyCharm, BakeryActivities, BakeryOrder[], and BakeryVisitors follow in deterministic order with eight-byte alignment. Existing object layouts and adjacency are unchanged.
+PlayerName occupies heap +0 through +31. The callback array immediately follows at heap +32 and occupies 32 bytes. PlayerState follows at heap +64 and occupies 136 bytes. Generator[], Upgrade[], Achievement[], Statistics, TemporaryEffects, ShopState, PrestigeState, RecipeBonus, LuckyCharm, BakeryActivities, and BakeryVisitors follow in deterministic order with eight-byte alignment.
+
+## Virtual shutdown callbacks
+
+The callback array contains two 16-byte objects. Each object stores an eight-byte vtable pointer at +0 and an invocation count at +8. The clean vtables are read-only guest data at `0x0000000001000100` and `0x0000000001000108`; their first entries point to clean guest functions at `0x0000000000400100` and `0x0000000000400108`.
+
+The simulated guest shell function is `0x0000000000400180`. A fresh machine places the callback array directly after the 32-byte name. A teaching payload can place the shell function address in the first eight name bytes, pad to 32 bytes, then overwrite the first callback object's vtable pointer with `0x0000555500000000`, the name allocation's address. **File → Quit…** performs the virtual call and opens the bounded guest shell when this redirection succeeds. Unknown function addresses fault instead of executing host code. Migrated older saves receive the same objects at the next free heap address; use a fresh run for the adjacency exercise.
+
+The corresponding fresh-game payload is `80 01 40 00 00 00 00 00`, followed by 24 padding bytes, followed by `00 00 00 00 55 55 00 00`. Paste it after `hex:` in the bakery name field or construct the same bytes in the memory editor.
 
 ## PlayerState
 
@@ -60,7 +68,7 @@ The pointer at globals +8 references a 128-byte allocation. All fields below are
 | `0x08` | Recipe click multiplier |
 | `0x10` | Recipe passive production multiplier |
 | `0x18`, `0x20`, `0x28` | Three recipe-unlocked flags |
-| `0x30` | Total orders completed |
+| `0x30` | Reserved |
 | `0x38` | Baking rushes won |
 | `0x40` | Rush state: idle 0, running 1, reward ready 2, missed 3, offer available 4 |
 | `0x48` | Rush target clicks |
@@ -69,9 +77,7 @@ The pointer at globals +8 references a 128-byte allocation. All fields below are
 | `0x60` | Rush deadline (absolute guest tick) |
 | `0x68` | Next random rush offer tick |
 | `0x70` | Last cookie shower reward |
-| `0x78` | Pointer to BakeryOrder[] |
-
-The order array has three 64-byte entries. Each contains kind at +0 (bake 0, click 1, generator 2), target at +8, starting counter at +16, reward at +24, generator index at +32, customer index at +40, completed-order count at +48, and a reserved field at +56. Baking and clicking progress subtract the starting counter from lifetime cookies or manual clicks; generator orders read current ownership. Claiming replaces the goal, baseline, reward, and customer, using the saved deterministic RNG.
+| `0x78` | Reserved |
 
 The recipe multipliers affect real clicking and passive production without modifying the stored base click/CPS values. Active rush clicks update the guest progress field; deadline expiry is driven only by guest ticks. All writes appear in write history. Unknown enum values and invalid pointers fault safely.
 

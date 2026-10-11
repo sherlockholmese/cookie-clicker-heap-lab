@@ -3,7 +3,7 @@ use crate::{
     theme::{compact, number},
 };
 use cookie_game::{
-    ACHIEVEMENTS, GENERATORS, GameView, OrderKind, RECIPES, RushState, TICKS_PER_SECOND, UPGRADES,
+    ACHIEVEMENTS, GENERATORS, GameView, RECIPES, RushState, TICKS_PER_SECOND, UPGRADES,
 };
 use eframe::egui::{self, Align, Button, RichText, ScrollArea, Stroke, Vec2};
 use vm_core::ExecutionBackend;
@@ -13,9 +13,9 @@ impl CookieApp {
             Ok(v) => v,
             Err(e) => {
                 self.machine.set_paused(true);
-                ui.heading("The bakery has a memory fault");
+                ui.heading(self.text("game.fault.title"));
                 ui.colored_label(self.theme().danger, e.to_string());
-                ui.label("The simulation is paused. Repair the guest bytes or start a fresh game from File.");
+                ui.label(self.text("game.fault.body"));
                 return;
             }
         };
@@ -49,29 +49,39 @@ impl CookieApp {
     }
     fn bakery_ui(&mut self, ui: &mut egui::Ui, v: &GameView) {
         let theme = self.theme();
+        let text = self.resources.text.clone();
+        let cookie_texture = self.resources.cookie.clone();
         ui.vertical_centered(|ui| {
             let balance = number(v.cookies);
             let font_size = (ui.available_width() / (balance.len() as f32 * 0.6)).clamp(24.0, 80.0);
             ui.label(RichText::new(balance).size(font_size).strong());
-            ui.label(RichText::new("cookies available").color(theme.muted));
+            ui.label(RichText::new(text.get("game.cookies.available")).color(theme.muted));
             ui.add_space(8.0);
             ui.label(
-                RichText::new(format!("{} total cookies baked", number(v.lifetime)))
-                    .size(14.0)
-                    .color(theme.muted),
+                RichText::new(
+                    text.format("game.cookies.lifetime", &[("count", number(v.lifetime))]),
+                )
+                .size(14.0)
+                .color(theme.muted),
             );
             ui.add_space(8.0);
-            ui.label(format!(
-                "{} per click · {} per second",
-                compact(v.click_power),
-                compact(v.cps)
+            ui.label(text.format(
+                "game.cookies.rates",
+                &[
+                    ("click", compact(v.click_power)),
+                    ("second", compact(v.cps)),
+                ],
             ));
             ui.add_space(16.0);
             let size = ui.available_width().min(240.0);
             let (_, response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
-            let response = response.on_hover_text("Bake a cookie · Enter or Space when focused");
+            let response = response.on_hover_text(text.get("game.cookie.tooltip"));
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Bake a cookie")
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    text.get("game.cookie.action"),
+                )
             });
             let center = response.rect.center();
             let radius = size * 0.43;
@@ -81,46 +91,59 @@ impl CookieApp {
             } else {
                 theme.cookie
             };
-            p.circle_filled(center, radius, fill);
-            p.circle_stroke(
-                center,
-                radius,
-                Stroke::new(
-                    if response.has_focus() { 3.0 } else { 2.0 },
-                    if response.has_focus() {
-                        theme.text
+            if let Some(texture) = &cookie_texture {
+                p.image(
+                    texture.id(),
+                    response.rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    if response.is_pointer_button_down_on() {
+                        egui::Color32::from_gray(210)
                     } else {
-                        theme.cookie_edge
+                        egui::Color32::WHITE
                     },
-                ),
-            );
-            for (x, y, r) in [
-                (-0.36, -0.44, 0.07),
-                (0.17, -0.56, 0.06),
-                (0.48, -0.14, 0.09),
-                (-0.55, 0.13, 0.08),
-                (-0.13, 0.00, 0.08),
-                (0.09, 0.53, 0.09),
-                (-0.32, 0.53, 0.05),
-                (0.44, 0.37, 0.06),
-            ] {
-                p.circle_filled(center + egui::vec2(x, y) * radius, radius * r, theme.chip);
+                );
+            } else {
+                p.circle_filled(center, radius, fill);
+                p.circle_stroke(
+                    center,
+                    radius,
+                    Stroke::new(
+                        if response.has_focus() { 3.0 } else { 2.0 },
+                        if response.has_focus() {
+                            theme.text
+                        } else {
+                            theme.cookie_edge
+                        },
+                    ),
+                );
+                for (x, y, r) in [
+                    (-0.36, -0.44, 0.07),
+                    (0.17, -0.56, 0.06),
+                    (0.48, -0.14, 0.09),
+                    (-0.55, 0.13, 0.08),
+                    (-0.13, 0.00, 0.08),
+                    (0.09, 0.53, 0.09),
+                    (-0.32, 0.53, 0.05),
+                    (0.44, 0.37, 0.06),
+                ] {
+                    p.circle_filled(center + egui::vec2(x, y) * radius, radius * r, theme.chip);
+                }
             }
             if response.clicked() {
                 let r = self.machine.click();
                 self.report(r);
             }
             if v.gift_available {
-                ui.label(RichText::new("Golden batch").strong());
+                ui.label(RichText::new(text.get("game.gift.title")).strong());
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("7× baking boost").clicked() {
+                    if ui.button(text.get("game.gift.boost")).clicked() {
                         let r = self.machine.claim_gift();
                         self.report(r);
                     }
                     if ui
-                        .button(format!(
-                            "Cookie shower · +{}",
-                            compact(v.activities.shower_reward)
+                        .button(text.format(
+                            "game.gift.shower",
+                            &[("count", compact(v.activities.shower_reward))],
                         ))
                         .clicked()
                     {
@@ -130,9 +153,12 @@ impl CookieApp {
                 });
             } else if v.boost_remaining > 0 {
                 ui.label(
-                    RichText::new(format!(
-                        "Golden batch · {}s of 7× production",
-                        v.boost_remaining.div_ceil(TICKS_PER_SECOND)
+                    RichText::new(text.format(
+                        "game.gift.active",
+                        &[(
+                            "seconds",
+                            v.boost_remaining.div_ceil(TICKS_PER_SECOND).to_string(),
+                        )],
                     ))
                     .color(theme.accent),
                 );
@@ -143,31 +169,51 @@ impl CookieApp {
         self.enemy_ui(ui, v);
         ui.add_space(16.0);
         ui.collapsing(&v.name, |ui| {
-            ui.label("Bakery name");
-            ui.text_edit_singleline(&mut self.name_draft);
-            if ui.button("Rename bakery").clicked() {
-                let bytes = self.name_draft.as_bytes().to_vec();
-                let r = self.machine.rename(&bytes);
-                self.report(r);
+            ui.label(text.get("game.bakery_name"));
+            let edit = ui.text_edit_singleline(&mut self.name_draft);
+            if self.debug_enabled() {
+                edit.on_hover_text(text.get("game.bakery_name.raw_hint"));
+            }
+            if ui.button(text.get("game.bakery_name.rename")).clicked() {
+                match name_bytes(&self.name_draft, self.debug_enabled()) {
+                    Ok(bytes) => {
+                        let result = self.machine.rename(&bytes);
+                        self.report(result);
+                    }
+                    Err(error) => self.report::<(), _>(Err(error)),
+                }
             }
         });
-        ui.collapsing("Statistics", |ui| {
+        ui.collapsing(text.get("game.statistics"), |ui| {
             egui::Grid::new("statistics").num_columns(2).show(ui, |ui| {
                 for (label, value) in [
-                    ("Manual clicks", number(v.clicks)),
-                    ("Cookies spent", number(v.spent)),
+                    (text.get("game.statistics.clicks"), number(v.clicks)),
+                    (text.get("game.statistics.spent"), number(v.spent)),
                     (
-                        "Session time",
-                        format!(
-                            "{}m {}s",
-                            v.play_ticks / TICKS_PER_SECOND / 60,
-                            v.play_ticks / TICKS_PER_SECOND % 60
+                        text.get("game.statistics.time"),
+                        text.format(
+                            "game.statistics.duration",
+                            &[
+                                (
+                                    "minutes",
+                                    (v.play_ticks / TICKS_PER_SECOND / 60).to_string(),
+                                ),
+                                (
+                                    "seconds",
+                                    (v.play_ticks / TICKS_PER_SECOND % 60).to_string(),
+                                ),
+                            ],
                         ),
                     ),
-                    ("Prestige", number(v.prestige)),
-                    ("Orders completed", number(v.activities.orders_done)),
-                    ("Baking rushes won", number(v.activities.rush_wins)),
-                    ("Visitors shooed", number(v.encounter.defeated)),
+                    (text.get("game.statistics.prestige"), number(v.prestige)),
+                    (
+                        text.get("game.statistics.rushes"),
+                        number(v.activities.rush_wins),
+                    ),
+                    (
+                        text.get("game.statistics.visitors"),
+                        number(v.encounter.defeated),
+                    ),
                 ] {
                     ui.label(label);
                     ui.label(value);
@@ -176,81 +222,87 @@ impl CookieApp {
             });
         });
         ui.collapsing(
-            format!(
-                "Achievements · {}/{}",
-                v.achievements.iter().filter(|x| **x).count(),
-                ACHIEVEMENTS.len()
+            text.format(
+                "game.achievements",
+                &[
+                    (
+                        "owned",
+                        v.achievements.iter().filter(|x| **x).count().to_string(),
+                    ),
+                    ("total", ACHIEVEMENTS.len().to_string()),
+                ],
             ),
             |ui| {
-                for (i, (name, threshold)) in ACHIEVEMENTS.iter().enumerate() {
-                    ui.label(format!(
-                        "{}  {name} · {} lifetime cookies",
-                        if v.achievements[i] { "✓" } else { "○" },
-                        compact(*threshold)
+                for (i, (_, threshold)) in ACHIEVEMENTS.iter().enumerate() {
+                    ui.label(text.format(
+                        "game.achievement.row",
+                        &[
+                            ("mark", if v.achievements[i] { "✓" } else { "○" }.into()),
+                            ("name", text.get(&format!("achievement.{i}.name")).into()),
+                            ("count", compact(*threshold)),
+                        ],
                     ));
                 }
             },
         );
-        ui.collapsing("Prestige",|ui|{
-            ui.label(format!("{} prestige points available. Each point adds 100% to base production.",v.prestige_gain));
-            ui.small("Earn a point at one million lifetime cookies. Future points require increasingly larger totals.");
-            if ui.add_enabled(v.prestige_gain>0,Button::new("Reset bakery for prestige…")).clicked(){self.confirm_prestige=true;}
+        ui.collapsing(text.get("game.prestige"), |ui| {
+            ui.label(text.format(
+                "game.prestige.points",
+                &[("count", v.prestige_gain.to_string())],
+            ));
+            ui.small(text.get("game.prestige.help"));
+            if ui
+                .add_enabled(
+                    v.prestige_gain > 0,
+                    Button::new(text.get("game.prestige.reset")),
+                )
+                .clicked()
+            {
+                self.confirm_prestige = true;
+            }
         });
     }
     fn shop_ui(&mut self, ui: &mut egui::Ui, v: &GameView) {
+        let text = self.resources.text.clone();
         ui.scope(|ui| {
             ui.spacing_mut().button_padding.x = 8.0;
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut self.shop_tab, 0, "Generators");
-                ui.selectable_value(&mut self.shop_tab, 1, "Upgrades");
-                let ready = v
-                    .activities
-                    .orders
-                    .iter()
-                    .filter(|o| o.progress >= o.target)
-                    .count();
-                ui.selectable_value(
-                    &mut self.shop_tab,
-                    2,
-                    if ready > 0 {
-                        format!("Orders ({ready})")
-                    } else {
-                        "Orders".into()
-                    },
-                );
-                ui.selectable_value(&mut self.shop_tab, 3, "Recipes");
+                ui.selectable_value(&mut self.shop_tab, 0, text.get("game.tab.generators"));
+                ui.selectable_value(&mut self.shop_tab, 1, text.get("game.tab.upgrades"));
+                ui.selectable_value(&mut self.shop_tab, 2, text.get("game.tab.recipes"));
             });
         });
         ui.add_space(16.0);
         if self.shop_tab == 0 {
-            for (i, spec) in GENERATORS.iter().enumerate() {
+            for (i, _spec) in GENERATORS.iter().enumerate() {
                 let g = &v.generators[i];
                 let muted = self.theme().muted;
                 activity_row(
                     ui,
                     |ui| {
-                        ui.label(RichText::new(spec.name).strong());
+                        let name = text.get(&format!("generator.{i}.name"));
+                        ui.label(RichText::new(name).strong());
                         ui.label(
-                            RichText::new(format!(
-                                "{} owned · {} /s each",
-                                compact(g.owned),
-                                compact(g.per_unit)
+                            RichText::new(text.format(
+                                "game.generator.detail",
+                                &[("owned", compact(g.owned)), ("rate", compact(g.per_unit))],
                             ))
                             .small()
                             .color(muted),
                         )
-                        .on_hover_text(format!(
-                            "{} cookies per second from all {}",
-                            number(g.production),
-                            spec.name
+                        .on_hover_text(text.format(
+                            "game.generator.tooltip",
+                            &[("rate", number(g.production)), ("name", name.to_owned())],
                         ));
                     },
                     |ui| {
                         if ui
                             .add_enabled(
                                 v.cookies >= g.price,
-                                Button::new(format!("Buy · {}", compact(g.price))),
+                                Button::new(
+                                    text.format("game.buy", &[("price", compact(g.price))]),
+                                ),
                             )
                             .clicked()
                         {
@@ -268,13 +320,13 @@ impl CookieApp {
                 activity_row(
                     ui,
                     |ui| {
-                        ui.label(RichText::new(spec.name).strong());
-                        ui.small(spec.description);
+                        ui.label(RichText::new(text.get(&format!("upgrade.{i}.name"))).strong());
+                        ui.small(text.get(&format!("upgrade.{i}.description")));
                         if !unlocked {
                             ui.label(
-                                RichText::new(format!(
-                                    "Unlocks at {} total cookies",
-                                    compact(spec.unlock)
+                                RichText::new(text.format(
+                                    "game.upgrade.unlock",
+                                    &[("count", compact(spec.unlock))],
                                 ))
                                 .small()
                                 .color(muted),
@@ -283,13 +335,17 @@ impl CookieApp {
                     },
                     |ui| {
                         if v.upgrades[i] {
-                            ui.label("Owned");
+                            ui.label(text.get("game.upgrade.owned"));
                         } else if ui
                             .add_enabled(
                                 unlocked && v.cookies >= spec.price,
-                                Button::new(format!("Buy · {}", compact(spec.price))),
+                                Button::new(
+                                    text.format("game.buy", &[("price", compact(spec.price))]),
+                                ),
                             )
-                            .on_hover_text(format!("Costs {} cookies", number(spec.price)))
+                            .on_hover_text(
+                                text.format("game.upgrade.cost", &[("count", number(spec.price))]),
+                            )
                             .clicked()
                         {
                             let r = self.machine.buy_upgrade(i);
@@ -299,41 +355,48 @@ impl CookieApp {
                 );
                 ui.add_space(16.0);
             }
-        } else if self.shop_tab == 2 {
-            self.orders_ui(ui, v);
         } else {
             self.recipes_ui(ui, v);
         }
     }
     fn rush_ui(&mut self, ui: &mut egui::Ui, v: &GameView) {
         let a = &v.activities;
+        let text = self.resources.text.clone();
         if matches!(a.rush_state, RushState::Idle | RushState::Missed) {
             return;
         }
         activity_row(
             ui,
             |ui| {
-                ui.label(RichText::new("Baking rush").strong());
+                ui.label(RichText::new(text.get("game.rush.title")).strong());
                 if a.rush_state == RushState::Offered {
-                    ui.small(format!(
-                        "{} clicks in 20s · +{} cookies",
-                        number(a.rush_target),
-                        compact(a.rush_reward)
+                    ui.small(text.format(
+                        "game.rush.offer",
+                        &[
+                            ("clicks", number(a.rush_target)),
+                            ("reward", compact(a.rush_reward)),
+                        ],
                     ));
                 } else if a.rush_state == RushState::Running {
-                    ui.small(format!(
-                        "{}s left",
-                        a.rush_remaining.div_ceil(TICKS_PER_SECOND)
+                    ui.small(text.format(
+                        "game.rush.time",
+                        &[(
+                            "seconds",
+                            a.rush_remaining.div_ceil(TICKS_PER_SECOND).to_string(),
+                        )],
                     ));
                 }
             },
             |ui| match a.rush_state {
                 RushState::Offered => {
                     if ui
-                        .button("Start rush")
-                        .on_hover_text(format!(
-                            "Offer closes in {}s",
-                            a.rush_remaining.div_ceil(TICKS_PER_SECOND)
+                        .button(text.get("game.rush.start"))
+                        .on_hover_text(text.format(
+                            "game.rush.deadline",
+                            &[(
+                                "seconds",
+                                a.rush_remaining.div_ceil(TICKS_PER_SECOND).to_string(),
+                            )],
                         ))
                         .clicked()
                     {
@@ -343,13 +406,16 @@ impl CookieApp {
                 }
                 RushState::Ready
                     if ui
-                        .button(format!("Collect · +{}", compact(a.rush_reward)))
+                        .button(
+                            text.format("game.rush.collect", &[("reward", compact(a.rush_reward))]),
+                        )
                         .clicked() =>
                 {
                     let r = self.machine.claim_rush();
                     self.report(r);
                     if !self.error {
-                        self.status = format!("Rush complete! +{} cookies", number(a.rush_reward));
+                        self.status =
+                            text.format("game.rush.complete", &[("reward", number(a.rush_reward))]);
                     }
                 }
                 _ => {}
@@ -357,10 +423,12 @@ impl CookieApp {
         );
         if a.rush_state == RushState::Running {
             ui.add(
-                egui::ProgressBar::new(progress(a.rush_progress, a.rush_target)).text(format!(
-                    "{} / {} clicks",
-                    compact(a.rush_progress),
-                    compact(a.rush_target)
+                egui::ProgressBar::new(progress(a.rush_progress, a.rush_target)).text(text.format(
+                    "game.rush.progress",
+                    &[
+                        ("current", compact(a.rush_progress)),
+                        ("target", compact(a.rush_target)),
+                    ],
                 )),
             );
         }
@@ -371,44 +439,66 @@ impl CookieApp {
             return;
         };
         let theme = self.theme();
+        let text = self.resources.text.clone();
+        let visitor_texture = self.resources.visitor.clone();
+        let display_name = match name {
+            "Sugar ants" => text.get("visitor.sugar_ants"),
+            "Crumb mouse" => text.get("visitor.crumb_mouse"),
+            "Cookie gobbler" => text.get("visitor.cookie_gobbler"),
+            _ => name,
+        };
         activity_row(
             ui,
             |ui| {
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
-                    let c = rect.center();
                     let p = ui.painter();
-                    p.circle_filled(c + egui::vec2(-12.0, -12.0), 7.0, theme.cookie_edge);
-                    p.circle_filled(c + egui::vec2(12.0, -12.0), 7.0, theme.cookie_edge);
-                    p.circle_filled(c, 17.0, theme.cookie_edge);
-                    for x in [-6.0, 6.0] {
-                        p.circle_filled(c + egui::vec2(x, -4.0), 5.0, theme.surface);
-                        p.circle_filled(c + egui::vec2(x, -3.0), 2.5, theme.text);
+                    if let Some(texture) = &visitor_texture {
+                        p.image(
+                            texture.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    } else {
+                        let c = rect.center();
+                        p.circle_filled(c + egui::vec2(-12.0, -12.0), 7.0, theme.cookie_edge);
+                        p.circle_filled(c + egui::vec2(12.0, -12.0), 7.0, theme.cookie_edge);
+                        p.circle_filled(c, 17.0, theme.cookie_edge);
+                        for x in [-6.0, 6.0] {
+                            p.circle_filled(c + egui::vec2(x, -4.0), 5.0, theme.surface);
+                            p.circle_filled(c + egui::vec2(x, -3.0), 2.5, theme.text);
+                        }
+                        p.circle_filled(c + egui::vec2(0.0, 12.0), 7.0, theme.cookie);
                     }
-                    p.circle_filled(c + egui::vec2(0.0, 12.0), 7.0, theme.cookie);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(name).strong());
-                        ui.small(format!(
-                            "{} /s · {} eaten",
-                            compact(v.encounter.bite),
-                            compact(v.encounter.stolen)
+                        ui.label(RichText::new(display_name).strong());
+                        ui.small(text.format(
+                            "game.visitor.detail",
+                            &[
+                                ("rate", compact(v.encounter.bite)),
+                                ("count", compact(v.encounter.stolen)),
+                            ],
                         ));
                     });
                 });
             },
             |ui| {
                 if ui
-                    .button(format!("Shoo · {}", number(v.encounter.health)))
-                    .on_hover_text("Shoo it away to recover the cookies it ate")
+                    .button(text.format(
+                        "game.visitor.shoo",
+                        &[("health", number(v.encounter.health))],
+                    ))
+                    .on_hover_text(text.get("game.visitor.tooltip"))
                     .clicked()
                 {
                     match self.machine.shoo_enemy() {
                         Ok(recovered) => {
                             self.error = false;
                             if v.encounter.health <= 1 {
-                                self.status = format!(
-                                    "Visitor shooed away · {} cookies recovered",
-                                    number(recovered)
+                                self.status = text.format(
+                                    "game.visitor.complete",
+                                    &[("count", number(recovered))],
                                 );
                             }
                         }
@@ -419,77 +509,31 @@ impl CookieApp {
         );
         ui.add_space(16.0);
     }
-    fn orders_ui(&mut self, ui: &mut egui::Ui, v: &GameView) {
-        for (i, o) in v.activities.orders.iter().enumerate() {
-            ui.push_id(("order", i), |ui| {
-                activity_row(
-                    ui,
-                    |ui| {
-                        ui.label(RichText::new(o.customer).strong());
-                        ui.label(match o.kind {
-                            OrderKind::Bake => format!("Bake {} new cookies", compact(o.target)),
-                            OrderKind::Click => {
-                                format!("Click the cookie {} times", compact(o.target))
-                            }
-                            OrderKind::Generator => format!(
-                                "Own {} × {}",
-                                compact(o.target),
-                                GENERATORS[o.generator].name,
-                            ),
-                        });
-                    },
-                    |ui| {
-                        if ui
-                            .add_enabled(
-                                o.progress >= o.target,
-                                Button::new(format!("Collect · +{}", compact(o.reward))),
-                            )
-                            .clicked()
-                        {
-                            let r = self.machine.claim_order(i);
-                            self.report(r);
-                            if !self.error {
-                                self.status = format!(
-                                    "{} order complete! +{} cookies",
-                                    o.customer,
-                                    number(o.reward)
-                                );
-                            }
-                        }
-                    },
-                );
-                ui.add(
-                    egui::ProgressBar::new(progress(o.progress, o.target)).text(format!(
-                        "{} / {}",
-                        compact(o.progress.min(o.target)),
-                        compact(o.target)
-                    )),
-                );
-                ui.add_space(24.0);
-            });
-        }
-    }
     fn recipes_ui(&mut self, ui: &mut egui::Ui, v: &GameView) {
+        let text = self.resources.text.clone();
         for (i, recipe) in RECIPES.iter().enumerate() {
             ui.push_id(("recipe", i), |ui| {
                 activity_row(
                     ui,
                     |ui| {
-                        ui.label(RichText::new(recipe.name).strong());
-                        ui.small(recipe.description);
+                        ui.label(RichText::new(text.get(&format!("recipe.{i}.name"))).strong());
+                        ui.small(text.get(&format!("recipe.{i}.description")));
                     },
                     |ui| {
                         if v.activities.recipe == i {
-                            ui.label("In use");
+                            ui.label(text.get("game.recipe.active"));
                         } else {
                             let unlocked = v.activities.recipes_unlocked[i];
                             if ui
                                 .add_enabled(
                                     unlocked || v.cookies >= recipe.price,
                                     Button::new(if unlocked {
-                                        "Use recipe".into()
+                                        text.get("game.recipe.use").into()
                                     } else {
-                                        format!("Unlock · {}", compact(recipe.price))
+                                        text.format(
+                                            "game.recipe.unlock",
+                                            &[("price", compact(recipe.price))],
+                                        )
                                     }),
                                 )
                                 .clicked()
@@ -504,6 +548,25 @@ impl CookieApp {
             });
         }
     }
+}
+pub(crate) fn name_bytes(value: &str, allow_raw: bool) -> Result<Vec<u8>, String> {
+    let Some(raw) = value.strip_prefix("hex:").filter(|_| allow_raw) else {
+        return Ok(value.as_bytes().to_vec());
+    };
+    let digits = raw
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<String>();
+    if digits.is_empty() || !digits.len().is_multiple_of(2) {
+        return Err("hex name payload must contain complete byte pairs".into());
+    }
+    (0..digits.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&digits[index..index + 2], 16)
+                .map_err(|_| "hex name payload contains a non-hex byte".to_string())
+        })
+        .collect()
 }
 fn activity_row(
     ui: &mut egui::Ui,

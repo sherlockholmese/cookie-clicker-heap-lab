@@ -194,6 +194,19 @@ impl Memory {
         self.regions.remove(i);
         Ok(())
     }
+    pub fn set_region_permissions(
+        &mut self,
+        base: Address,
+        permissions: Permissions,
+    ) -> Result<()> {
+        let region = self
+            .regions
+            .iter_mut()
+            .find(|region| region.base == base)
+            .ok_or(Fault::Unmapped(base))?;
+        region.permissions = permissions;
+        Ok(())
+    }
     // Validate the entire transfer before mutating: faults never leave a partial write.
     fn spans(
         &self,

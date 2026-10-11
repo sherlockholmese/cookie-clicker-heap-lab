@@ -10,7 +10,9 @@
 - Explicit save and explicit load only; no persistence feature enabled in eframe.
 - No offline production, process attachment, native code execution, guest syscalls, or lesson subsystem.
 
-The later UI refinements deliberately use tools opened on demand, floating above the game. Memory browses only the heap. Its Inspector button opens a separate read-only popout; allocation metadata and optional object names appear there. Direct editing happens in the hex cells, advancing after each complete byte.
+The UI uses tools opened on demand, floating above the game. Memory browses the writable heap and read-only code region. Its Inspector button opens a separate read-only popout; allocation metadata and optional object names appear there. Direct heap editing happens in the hex cells, advancing after each complete byte.
+
+User-facing text and simple sprite art are loaded from the plain-text `assets` resource pack. The app checks the working directory and executable directory before using embedded defaults. UI code refers to stable text keys, while gameplay state and save files remain independent of presentation resources.
 
 ## Crates
 
@@ -40,18 +42,19 @@ A root pointer in guest globals points to PlayerState. Gameplay reads player and
 
 The economy uses integer arithmetic with saturation at `u64::MAX`. Twenty guest ticks represent one simulated second; a guest remainder retains fractional production. Prices increase by approximately 15% after each purchase. Click/passive upgrades, prestige, and guest effect deadlines determine production. Catalogue names and base prices are immutable host configuration; mutable rates, ownership, current prices, flags and timers live in guest memory.
 
-A second globals pointer references BakeryActivities and its order array. Three concurrent orders reward baking, clicking, and generator ownership; newly generated goals use the machine RNG and current production. Recipes independently multiply clicking or passive production and are purchased once. Baking rushes arrive as random offers and use guest progress counters, absolute deadlines, and explicit reward claims. BakeryVisitors, reached through globals +16, stores enemy health, bite size, stolen cookies, and arrival/departure timers. Golden batches offer a boost or a production-scaled instant reward. Prestige rebases orders and cancels the current rush, while retaining recipe unlocks and activity statistics. None of these features requires the debugger.
+A second globals pointer references BakeryActivities. Recipes independently multiply clicking or passive production and are purchased once. Baking rushes arrive as random offers and use guest progress counters, absolute deadlines, and explicit reward claims. BakeryVisitors, reached through globals +16, stores enemy health, bite size, stolen cookies, and arrival/departure timers. Golden batches offer a boost or a production-scaled instant reward. Prestige cancels the current rush while retaining recipe unlocks and activity statistics. None of these features requires the debugger.
 
 UI execution uses bounded fixed-step catch-up. Wall-clock timestamps never enter saves, and loading resets the UI accumulator. Input actions and tick counts define deterministic replays. Runtime pause is a debugger/UI preference and is excluded from snapshots.
 
 ## Controlled vulnerabilities
 
-- `rename_player`: writes supplied bytes plus NUL through the VM, without enforcing the 32-byte name allocation. PlayerState is immediately adjacent.
+- `rename_player`: writes supplied bytes plus NUL through the VM, without enforcing the 32-byte name allocation. Two virtual callback objects are immediately adjacent in fresh games.
+- Exit dispatch reads each object's vtable pointer, then its first eight-byte function entry. A fake vtable in the name allocation can redirect this call to the simulated guest-shell function.
 - `label_recipe`: writes bytes plus NUL without enforcing the 24-byte label field. It can overwrite a multiplier and an eight-byte pointer in ShopState.
 - Recipe-pointer corruption redirects a subsequent guest read used in click calculations.
 - Trading a charm frees its allocation and creates a coupon that reuses the space. Statistics retains the old charm pointer, which later reads the coupon's value.
 
-Guest object reads validate their complete mapped extent before field offset arithmetic. Corrupt pointers cause recoverable guest faults; they do not panic or reach host memory. UI fault handling pauses simulation and allows memory repair or a fresh run. Each guest operation caps its input at 4096 bytes, independently of the deliberate logical-boundary violation.
+Guest object reads validate their complete mapped extent before field offset arithmetic. Shutdown dispatch recognizes only its clean functions and the guest-shell teaching target. Other values cause recoverable guest faults; they do not panic, spawn a process, or reach host memory. UI fault handling pauses simulation and allows memory repair or a fresh run. Each guest operation caps its input at 4096 bytes, independently of the deliberate logical-boundary violation.
 
 ## Observability
 
@@ -74,7 +77,7 @@ The file begins with 36 bytes:
 
 The payload is a Serde/bincode snapshot with fixed integer encoding and little-endian semantics. Version 1 permits at most 32 MiB and rejects trailing data. Loading checks size, magic, versions, architecture, exact length, checksum, mapped regions, and allocator invariants before returning a complete replacement machine. Invalid guest values remain valid snapshot bytes; invalid host metadata is rejected.
 
-The envelope remains format version 1; application compatibility is 3. Older saves gain missing activity/visitor allocations at globals +8/+16, new event intervals, and harder incomplete generator orders. Migration preserves balances, existing allocation addresses, RNG, ticks, and running or completed rushes. Corrupted pointers remain corrupted. Compatibility-3 snapshots resume exactly and never silently repair corrupted roots.
+The envelope remains format version 1; application compatibility is 4. Older saves gain missing activity, visitor, and callback allocations at globals +8/+16/+24. Migration preserves balances, existing allocation addresses, RNG, ticks, and running or completed rushes. Corrupted pointers remain corrupted. Compatibility-4 snapshots resume exactly and never silently repair corrupted roots.
 
 Saving creates a uniquely named temporary file in the destination directory, writes and syncs it, then atomically replaces the destination using tempfile's platform implementation. Unix additionally syncs the parent directory. There is no implicit default slot. CRC detects accidental damage; it is not an authenticity signature.
 

@@ -8,15 +8,19 @@ use vm_core::{
 use vm_heap::{Heap, HeapError};
 mod activities;
 mod encounters;
-pub use activities::{
-    ActivitiesView, OrderKind, OrderView, RECIPES, RecipeSpec, RushState, activity_field,
-};
+pub use activities::{ActivitiesView, RECIPES, RecipeSpec, RushState, activity_field};
 pub use encounters::{EncounterView, encounter_field};
 
 pub const TICKS_PER_SECOND: u64 = 20;
 pub const PLAYER_SIZE: u64 = 136;
 pub const GENERATOR_SIZE: u64 = 32;
 pub const NAME_SIZE: u64 = 32;
+pub const SHUTDOWN_CALLBACKS_SIZE: u64 = 32;
+pub const SHUTDOWN_AUDIT_VTABLE: Address = Architecture::RODATA + 0x100;
+pub const SHUTDOWN_OVEN_VTABLE: Address = Architecture::RODATA + 0x108;
+pub const SHUTDOWN_AUDIT_FUNCTION: Address = Architecture::CODE + 0x100;
+pub const SHUTDOWN_OVEN_FUNCTION: Address = Architecture::CODE + 0x108;
+pub const GUEST_SHELL_FUNCTION: Address = Architecture::CODE + 0x180;
 pub mod field {
     pub const COOKIES: u64 = 0;
     pub const LIFETIME: u64 = 8;
@@ -48,6 +52,11 @@ pub enum GameError {
     Locked,
     #[error("invalid guest state: {0}")]
     InvalidState(String),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownOutcome {
+    Close,
+    GuestShell,
 }
 pub type Result<T> = std::result::Result<T, GameError>;
 #[derive(Debug, Clone, Copy)]
@@ -245,8 +254,10 @@ impl Machine {
             tick: 0,
             paused: false,
         };
-        // Adjacency is intentional: a rename overflows directly into PlayerState.
+        m.initialize_guest_code()?;
+        // Adjacency is intentional: a rename reaches the shutdown callbacks' vtable pointers.
         let name = m.heap.allocate(NAME_SIZE, 8, "PlayerName")?;
+        m.initialize_shutdown_callbacks()?;
         let player = m.heap.allocate(PLAYER_SIZE, 8, "PlayerState")?;
         let generators =
             m.heap
@@ -312,6 +323,95 @@ impl Machine {
         let a = self.memory.read_ptr64(Architecture::GLOBALS)?;
         self.memory.read(a, PLAYER_SIZE)?;
         Ok(a)
+    }
+    fn initialize_guest_code(&mut self) -> Result<()> {
+        self.memory
+            .set_region_permissions(Architecture::CODE, Permissions::RW)?;
+        for (address, bytes) in [
+            (
+                SHUTDOWN_AUDIT_FUNCTION,
+                &[0x55, 0x48, 0x89, 0xE5, 0x48, 0xFF, 0x47, 0x08, 0x5D, 0xC3][..],
+            ),
+            (
+                SHUTDOWN_OVEN_FUNCTION,
+                &[0x55, 0x48, 0x89, 0xE5, 0x48, 0xFF, 0x47, 0x08, 0x5D, 0xC3][..],
+            ),
+            (
+                GUEST_SHELL_FUNCTION,
+                &[
+                    0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x20, 0x90, 0x90, 0xC9, 0xC3,
+                ][..],
+            ),
+        ] {
+            self.memory.write(
+                address,
+                bytes,
+                WriteSource::Initialization,
+                self.tick,
+                "initialize_guest_code",
+            )?;
+        }
+        self.memory
+            .set_region_permissions(Architecture::CODE, Permissions::RX)?;
+        Ok(())
+    }
+    pub fn initialize_shutdown_callbacks(&mut self) -> Result<()> {
+        let root = Architecture::GLOBALS + 24;
+        let existing = self.memory.read_ptr64(root)?;
+        if existing != 0 {
+            self.memory.read(existing, SHUTDOWN_CALLBACKS_SIZE)?;
+            return Ok(());
+        }
+
+        // Populate immutable guest vtables during machine construction or save migration.
+        self.memory
+            .set_region_permissions(Architecture::RODATA, Permissions::RW)?;
+        let vtables = [SHUTDOWN_AUDIT_FUNCTION, SHUTDOWN_OVEN_FUNCTION]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        let write_result = self.memory.write(
+            SHUTDOWN_AUDIT_VTABLE,
+            &vtables,
+            WriteSource::Initialization,
+            self.tick,
+            "initialize_shutdown_vtables",
+        );
+        self.memory
+            .set_region_permissions(Architecture::RODATA, Permissions::R)?;
+        write_result?;
+
+        let handlers = self
+            .heap
+            .allocate(SHUTDOWN_CALLBACKS_SIZE, 8, "ShutdownCallback[]")?;
+        self.store_init(root, handlers)?;
+        self.store_init(handlers, SHUTDOWN_AUDIT_VTABLE)?;
+        self.store_init(handlers + 16, SHUTDOWN_OVEN_VTABLE)?;
+        Ok(())
+    }
+    pub fn shutdown_callbacks_address(&self) -> Result<Address> {
+        let address = self.memory.read_ptr64(Architecture::GLOBALS + 24)?;
+        self.memory.read(address, SHUTDOWN_CALLBACKS_SIZE)?;
+        Ok(address)
+    }
+    pub fn run_shutdown_callbacks(&mut self) -> Result<ShutdownOutcome> {
+        let handlers = self.shutdown_callbacks_address()?;
+        for (offset, expected) in [(0, SHUTDOWN_AUDIT_FUNCTION), (16, SHUTDOWN_OVEN_FUNCTION)] {
+            let object = handlers + offset;
+            let vtable = self.memory.read_ptr64(object)?;
+            let function = self.memory.read_ptr64(vtable)?;
+            if function == GUEST_SHELL_FUNCTION {
+                self.add_at(object + 8, 1, "invoke_shutdown_callback")?;
+                return Ok(ShutdownOutcome::GuestShell);
+            }
+            if function != expected {
+                return Err(GameError::InvalidState(format!(
+                    "shutdown callback attempted unknown guest function 0x{function:016X}"
+                )));
+            }
+            self.add_at(object + 8, 1, "invoke_shutdown_callback")?;
+        }
+        Ok(ShutdownOutcome::Close)
     }
     pub fn address(&self, offset: u64) -> Result<Address> {
         self.player()?
@@ -853,13 +953,38 @@ mod tests {
         let mut m = Machine::new(1).unwrap();
         let heap = m.heap.clone();
         let mut payload = vec![b'A'; 32];
-        payload.extend(12345u64.to_le_bytes());
+        payload.extend(m.object(field::NAME).unwrap().to_le_bytes());
         m.rename(&payload).unwrap();
-        assert_eq!(m.value(field::COOKIES).unwrap(), 12345);
+        assert_eq!(
+            m.memory
+                .read_ptr64(m.shutdown_callbacks_address().unwrap())
+                .unwrap(),
+            m.object(field::NAME).unwrap()
+        );
         assert_eq!(m.heap, heap);
         let e = m.memory.events().back().unwrap();
         assert_eq!(e.overflow, 9);
         assert_eq!(e.affected.len(), 2);
+    }
+    #[test]
+    fn name_overflow_redirects_virtual_callback_to_guest_shell() {
+        let mut m = Machine::new(1).unwrap();
+        assert_eq!(m.run_shutdown_callbacks().unwrap(), ShutdownOutcome::Close);
+
+        let name = m.object(field::NAME).unwrap();
+        let mut payload = GUEST_SHELL_FUNCTION.to_le_bytes().to_vec();
+        payload.resize(NAME_SIZE as usize, b'A');
+        payload.extend(name.to_le_bytes());
+        m.rename(&payload).unwrap();
+
+        assert_eq!(
+            m.run_shutdown_callbacks().unwrap(),
+            ShutdownOutcome::GuestShell
+        );
+        assert_eq!(
+            m.heap.allocation_for(name).unwrap().semantic_type,
+            "PlayerName"
+        );
     }
     #[test]
     fn recipe_pointer_and_intra_object_overwrite() {
