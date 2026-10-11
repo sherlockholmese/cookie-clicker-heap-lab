@@ -57,4 +57,5 @@ This checklist maps `spec.md` to the implementation. It is instructor-facing and
 - The Rust/egui codebase is shared across Linux, Windows, and macOS.
 - CI runs formatting, strict linting, tests, and release builds on Ubuntu, Windows, and macOS.
 - Interface copy and editable default object strings live in `assets/strings.txt`.
+- The clickable cookie loads its human-replaceable placeholder sprite from `assets/cookie.sprite.txt` with nearest-neighbor scaling and text fallback.
 - The app uses egui defaults and placeholder assets. Project typography, palette, and final artwork remain human decisions. Red pointers and per-field diagnostic colors exist only because the memory-view specification requires them.

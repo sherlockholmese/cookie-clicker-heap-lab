@@ -2,15 +2,64 @@
 #![forbid(unsafe_code)]
 use cookie_game::{CURSOR_PRICE, FLAG_PRICE, GameView, Machine, globals};
 use eframe::egui::{self, Color32, RichText};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use vm_core::{Address, Architecture, ExecutionBackend};
 
 const COPY: &str = include_str!("../../../assets/strings.txt");
+const COOKIE_SPRITE: &str = include_str!("../../../assets/cookie.sprite.txt");
 fn text(key: &str) -> &'static str {
     COPY.lines()
         .filter_map(|line| line.split_once('='))
         .find_map(|(candidate, value)| (candidate.trim() == key).then_some(value.trim()))
         .unwrap_or("<missing text>")
+}
+
+fn cookie_sprite() -> Option<egui::ColorImage> {
+    let mut size = None;
+    let mut palette = HashMap::new();
+    let mut pixels = Vec::new();
+    let mut reading_pixels = false;
+    for raw_line in COOKIE_SPRITE.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "pixels:" {
+            reading_pixels = true;
+            continue;
+        }
+        if reading_pixels {
+            pixels.extend(line.chars());
+            continue;
+        }
+        let (key, value) = line.split_once('=')?;
+        if key.trim() == "size" {
+            let (width, height) = value.trim().split_once('x')?;
+            size = Some((width.parse::<usize>().ok()?, height.parse::<usize>().ok()?));
+            continue;
+        }
+        let symbol = key.trim().chars().next()?;
+        let rgba = u32::from_str_radix(value.trim(), 16).ok()?;
+        palette.insert(
+            symbol,
+            Color32::from_rgba_unmultiplied(
+                (rgba >> 24) as u8,
+                (rgba >> 16) as u8,
+                (rgba >> 8) as u8,
+                rgba as u8,
+            ),
+        );
+    }
+    let (width, height) = size?;
+    if pixels.len() != width * height {
+        return None;
+    }
+    let colors = pixels
+        .into_iter()
+        .map(|symbol| palette.get(&symbol).copied())
+        .collect::<Option<Vec<_>>>()?;
+    Some(egui::ColorImage::new([width, height], colors))
 }
 
 pub fn window_title() -> String {
@@ -34,6 +83,7 @@ pub struct CookieApp {
     status: String,
     last_frame: Instant,
     accumulator: Duration,
+    cookie_texture: Option<egui::TextureHandle>,
 }
 
 impl CookieApp {
@@ -59,6 +109,7 @@ impl CookieApp {
             status: String::new(),
             last_frame: Instant::now(),
             accumulator: Duration::ZERO,
+            cookie_texture: None,
         }
     }
     fn report(&mut self, result: Result<(), impl std::fmt::Display>) {
@@ -689,9 +740,25 @@ impl CookieApp {
             }
         });
         ui.add_space(24.0);
+        if self.cookie_texture.is_none()
+            && let Some(image) = cookie_sprite()
+        {
+            self.cookie_texture = Some(ui.ctx().load_texture(
+                "cookie-sprite",
+                image,
+                egui::TextureOptions::NEAREST,
+            ));
+        }
         ui.vertical_centered(|ui| {
             ui.heading(format!("{} {}", view.cookies, text("game.cookies")));
-            let cookie = ui.add_sized([180.0, 180.0], egui::Button::new(text("game.cookie")));
+            let cookie = if let Some(texture) = &self.cookie_texture {
+                let image = egui::Image::new(texture)
+                    .fit_to_exact_size(egui::vec2(160.0, 160.0))
+                    .alt_text(text("game.cookie"));
+                ui.add_sized([180.0, 180.0], egui::Button::new(image))
+            } else {
+                ui.add_sized([180.0, 180.0], egui::Button::new(text("game.cookie")))
+            };
             if self.pointer_mode {
                 let mut inspect = false;
                 cookie.clone().on_hover_ui(|ui| {
@@ -839,6 +906,14 @@ mod tests {
             vec![65, 0, 255]
         );
         assert!(CookieApp::parse_field("\\xGG").is_err());
+    }
+    #[test]
+    fn cookie_asset_parses_as_declared() {
+        let sprite = cookie_sprite().expect("the bundled cookie sprite should parse");
+        assert_eq!(sprite.size, [16, 16]);
+        assert_eq!(sprite.pixels.len(), 256);
+        assert_eq!(sprite.pixels[0], Color32::TRANSPARENT);
+        assert!(sprite.pixels.iter().any(|pixel| pixel.a() == 255));
     }
     #[test]
     fn debugger_is_built_in() {
