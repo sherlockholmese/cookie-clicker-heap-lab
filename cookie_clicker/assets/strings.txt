@@ -10,7 +10,6 @@ game.cookies=cookies
 game.cursor.buy=Buy Cursor
 game.flag.buy=Buy flag
 game.cursors=Cursors
-game.cursor.click=Click
 game.cursor.edit=Edit
 game.win.title=You win
 pointer.toggle=Pointer view

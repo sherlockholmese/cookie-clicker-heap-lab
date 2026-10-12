@@ -43,14 +43,22 @@ class GameTests(unittest.TestCase):
         with self.assertRaises(MemoryFault):
             machine.write_memory(FN_WIN, b"X")
 
-    def test_click_cursor_cost_and_one_per_second(self) -> None:
+    def test_cursor_cost_and_one_per_second(self) -> None:
         machine = funded_machine()
         self.assertEqual(machine.view().cookies, 0)
         for _ in range(20):
             machine.advance_tick()
         self.assertEqual(machine.view().cookies, 1)
-        machine.invoke_cursor(0)
-        self.assertEqual(machine.view().cookies, 2)
+
+    def test_passive_production_dispatches_each_cursor_callback(self) -> None:
+        machine = funded_machine()
+        cursor = machine.view().cursors[0].address
+        machine.write_memory(cursor + CURSOR_ON_CLICKED, FN_WIN.to_bytes(8, "little"))
+        for _ in range(20):
+            machine.advance_tick()
+        view = machine.view()
+        self.assertTrue(view.won)
+        self.assertEqual(view.cookies, 0)
 
     def test_direct_memory_edit_updates_game(self) -> None:
         machine = Machine(1)
@@ -90,14 +98,16 @@ class GameTests(unittest.TestCase):
         direct = funded_machine()
         cursor = direct.view().cursors[0].address
         direct.write_memory(cursor + CURSOR_ON_CLICKED, FN_WIN.to_bytes(8, "little"))
-        direct.invoke_cursor(0)
+        for _ in range(20):
+            direct.advance_tick()
         self.assertTrue(direct.view().won)
 
         exploit = funded_machine()
         cursor = exploit.view().cursors[0].address
         exploit.rename_cursor(0, b"12345678" + (cursor + CURSOR_ON_CLICKED).to_bytes(8, "little"))
         exploit.describe_cursor(0, FN_WIN.to_bytes(8, "little"))
-        exploit.invoke_cursor(0)
+        for _ in range(20):
+            exploit.advance_tick()
         self.assertTrue(exploit.view().won)
 
     def test_invalid_callback_reverts(self) -> None:

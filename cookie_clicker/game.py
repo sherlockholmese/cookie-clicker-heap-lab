@@ -254,11 +254,14 @@ class Machine:
         if self.paused:
             return
         self.tick += 1
-        self.passive_remainder += self._read_u64(GLOBALS + G_CURSOR_COUNT)
-        gain, self.passive_remainder = divmod(self.passive_remainder, TICKS_PER_SECOND)
-        if gain:
-            address = self.cookies_address()
-            self._write_u64(address, min(MASK64, self._read_u64(address) + gain))
+        self.passive_remainder += 1
+        elapsed_seconds, self.passive_remainder = divmod(
+            self.passive_remainder, TICKS_PER_SECOND
+        )
+        for _ in range(elapsed_seconds):
+            cursor_count = min(self._read_u64(GLOBALS + G_CURSOR_COUNT), MAX_CURSORS)
+            for index in range(cursor_count):
+                self.invoke_cursor(index)
 
     def function_table(self) -> tuple[tuple[str, int], ...]:
         return (

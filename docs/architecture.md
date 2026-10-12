@@ -6,6 +6,6 @@ All guest pointers are 64-bit little-endian integers. A guest address reaches a 
 
 The UI derives a fresh view from guest memory on every refresh and updates persistent widgets in place. Game actions and debugger writes therefore update the same bytes without recreating or flickering the interface. Invalid pointer dereferences report a simulated segmentation fault and restore the last valid deep snapshot.
 
-The two intentional guest vulnerabilities are preserved. `rename_user` obeys the mutable `max_field_size` global, allowing the username allocation to overflow into `Cookies.cookies`. `rename_cursor` can overflow its eight-byte name into the description and callback pointers. Description edits write through the current description pointer, and callback dispatch recognizes only the simulated `add_cookie` and `win` addresses.
+The two intentional guest vulnerabilities are preserved. `rename_user` obeys the mutable `max_field_size` global, allowing the username allocation to overflow into `Cookies.cookies`. `rename_cursor` can overflow its eight-byte name into the description and callback pointers. Description edits write through the current description pointer. Once-per-second production dispatches each Cursor's current `on_clicked` pointer, which recognizes only the simulated `add_cookie` and `win` addresses.
 
 Package resources contain all visible copy and the palette-based placeholder cookie sprite. The GUI uses platform-default controls and fonts so human designers retain control of final presentation.

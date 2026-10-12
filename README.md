@@ -15,10 +15,10 @@ No third-party runtime packages are required. `--seed NUMBER` starts a determini
 ## Game
 
 - Click the sprite for one cookie.
-- Buy a Cursor for 10 cookies. Each Cursor produces one cookie per second.
+- Buy a Cursor for 10 cookies. Once per second, every Cursor dispatches its live
+  `on_clicked` function pointer.
 - Buy the flag for 1,000,000,000,000 cookies. Acquiring the flag and executing `win()` are separate goals.
 - Edit the username, Cursor names, and Cursor descriptions. Every text editor accepts mixed text and raw `\xNN` bytes.
-- Click a Cursor to dispatch its simulated `on_clicked` function pointer.
 
 The worksheet remains separate from the application. The game contains no exploit walkthrough.
 

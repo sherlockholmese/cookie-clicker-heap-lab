@@ -853,13 +853,6 @@ class CookieApp:
             )
             ttk.Button(
                 row,
-                text=text("game.cursor.click"),
-                command=lambda value=index: self.execute(
-                    lambda: self.machine.invoke_cursor(value)
-                ),
-            ).pack(side="right")
-            ttk.Button(
-                row,
                 text=text("game.cursor.edit"),
                 command=lambda value=index: self.edit_cursor(value),
             ).pack(side="right", padx=4)

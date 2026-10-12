@@ -6,6 +6,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 
 - The game starts at zero; the cookie adds one per click.
 - A Cursor costs 10 and every owned Cursor produces one cookie per second.
+- Every automatic Cursor activation dispatches that Cursor's live `on_clicked` pointer.
 - The trillion-cookie flag and `win()` are separate goals and separate guest fields.
 - `win()` switches the main surface to a dedicated ending screen.
 - Username, Cursor name, and Cursor description are editable.
@@ -52,7 +53,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 - Cursor name overflow reaches the adjacent description and `on_clicked` pointers.
 - Opening a Cursor editor opens Memory at that Cursor for side-by-side work.
 - Redirecting description to `Cursor.on_clicked` makes description editing write through that pointer.
-- Writing the `win` address and clicking the Cursor reaches the ending screen.
+- Writing the `win` address reaches the ending screen on the Cursor's next automatic activation.
 - Direct cookie edits, endianness exercises, struct edits, string-pointer replacement, pointer tracing, nonsense-pointer recovery, forged structs, indirect writes, and function-table exploration are supported.
 
 ## Complete Python port
