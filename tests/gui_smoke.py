@@ -1,6 +1,7 @@
 """Display-backed smoke test for the native tkinter surfaces."""
 
 from cookie_clicker.game import Machine
+from cookie_clicker.resources import text
 from cookie_clicker.ui import CookieApp
 
 
@@ -39,6 +40,14 @@ def main() -> None:
     )
     app.pointer_mode.set(True)
     app.refresh()
+    cursor_buttons = [
+        child
+        for row in app.cursor_list.winfo_children()
+        for child in row.winfo_children()
+        if child.winfo_class() == "TButton"
+    ]
+    assert len(cursor_buttons) == 2
+    assert text("game.cursor.edit") in {button.cget("text") for button in cursor_buttons}
     first_user_widget = app.user_label
     app.refresh()
     assert app.user_label is first_user_widget
