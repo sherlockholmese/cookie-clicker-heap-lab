@@ -52,13 +52,15 @@ class GameTests(unittest.TestCase):
 
     def test_passive_production_dispatches_each_cursor_callback(self) -> None:
         machine = funded_machine()
+        machine.write_memory(machine.cookies_address(), (10).to_bytes(8, "little"))
+        machine.buy_cursor()
         cursor = machine.view().cursors[0].address
         machine.write_memory(cursor + CURSOR_ON_CLICKED, FN_WIN.to_bytes(8, "little"))
         for _ in range(20):
             machine.advance_tick()
         view = machine.view()
         self.assertTrue(view.won)
-        self.assertEqual(view.cookies, 0)
+        self.assertEqual(view.cookies, 1)
 
     def test_direct_memory_edit_updates_game(self) -> None:
         machine = Machine(1)
