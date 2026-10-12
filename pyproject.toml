@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cookie-clicker-pwn"
+version = "1.0.0"
+description = "Pure-Python Cookie Clicker binary-exploitation workshop"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+cookie-clicker-pwn = "cookie_clicker.app:main"
+
+[tool.setuptools.package-data]
+"cookie_clicker.assets" = ["*.txt"]
+
+[tool.setuptools.packages.find]
+include = ["cookie_clicker*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

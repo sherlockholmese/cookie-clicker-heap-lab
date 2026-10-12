@@ -1,61 +1,65 @@
 # Specification compliance
 
-This checklist maps `spec.md` to the implementation. It is instructor-facing and is not shown as an in-game walkthrough.
+This checklist maps `spec.md` to the pure-Python implementation. It is instructor-facing and does not appear as an in-game walkthrough.
 
 ## Game
 
-- The game starts at zero cookies. The cookie adds one per click.
-- A Cursor costs 10 cookies and every owned Cursor produces one cookie per second.
-- The trillion-cookie flag and execution of `win()` are separate goals and separate guest fields.
+- The game starts at zero; the cookie adds one per click.
+- A Cursor costs 10 and every owned Cursor produces one cookie per second.
+- The trillion-cookie flag and `win()` are separate goals and separate guest fields.
 - `win()` switches the main surface to a dedicated ending screen.
 - Username, Cursor name, and Cursor description are editable.
 - Every text editor accepts mixed text and raw `\xNN` bytes.
+- The supplied palette sprite is the clickable cookie, with text fallback if the asset is invalid.
 
 ## Memory tools
 
-- Memory is a draggable window separate from the main game surface.
-- Its default byte view renders 16-byte rows as two groups of eight with an adjacent ASCII rendering.
-- Qword mode displays and edits packed little-endian 64-bit values.
-- Individual bytes and qwords can be selected and written.
-- Addresses can be entered directly; `.text`, `.bss`, heap, and function-table shortcuts are provided.
-- Pointer fields and pointer-table entries are red. Known struct bytes are underlined and fields use distinct diagnostic colors.
-- Field hover text reports the field name, type, interpreted value, containing object, offset, and address.
-- Pointer hover text reports the target address plus a 16-byte hex and ASCII preview, or `unmapped`.
-- Pointer qwords can be followed by double-clicking. Selected pointer bytes expose a Follow pointer action.
-- Game writes and debugger writes use the same authoritative memory and update in both directions.
-- Invalid data and function pointers produce a simulated segmentation fault and restore the last valid state.
+- Memory is a separate native `Toplevel` window and is draggable by the operating system.
+- Byte mode is the default and renders 16-byte rows in visible 8+8 groups with adjacent ASCII.
+- Qword mode reads and writes packed little-endian 64-bit values.
+- Individual bytes and qwords are selectable and writable.
+- Direct address entry and `.text`, `.bss`, heap, and function-table shortcuts are present.
+- Pointer fields and pointer-table entries are red. Struct fields are underlined and use distinct diagnostic colors.
+- Field hover data includes the name, type, interpreted value, object, offset, and address.
+- Pointer hover data includes its target and a 16-byte hex/ASCII preview or `unmapped`.
+- Pointer qwords can be followed by double-click; selected pointer bytes expose **Follow pointer**.
+- Game operations and debugger operations use the same checked memory and update both surfaces.
+- Invalid data and function pointers report a simulated segmentation fault and restore the last valid snapshot.
+- Persistent widgets and render-state caches update only changed values, preventing timer-driven flicker.
 
 ## Pointer view
 
 - Pointer view is an explicit toggle.
-- When enabled, username, cookie-count, and Cursor objects expose their live guest addresses.
-- Each exposed address opens the relevant location in Memory. The original game actions remain available.
-- Hover popups contain clickable address links, and the same links remain visible inline for reliable mouse and keyboard access.
+- Username, cookie-count, and Cursor objects expose live guest addresses only while enabled.
+- Hover popups contain clickable address buttons, cancel stale hide timers, and remain open while the pointer crosses any popup child.
+- Equivalent inline buttons support reliable keyboard and mouse access.
+- Address activation opens Memory at the relevant location without replacing the original game action.
 
 ## Virtual machine
 
-- Guest pointers are checked 64-bit values and never become host pointers.
-- The object heap begins at `0x055200000`.
-- `.text` is read/execute-only after initialization, `.bss` is writable, and the heap is writable.
-- `.text` contains labelled teaching bytecode for `add_cookie` and `win`, not native instructions.
-- `.bss` contains the global Cookies, User, Cursor-array, function-table, count, input-limit, flag, and win fields.
-- The Cursor array itself is in `.bss`; purchasing a Cursor adds its heap pointer to the next entry.
-- The Functions view is a live table of identifiers and addresses. Addresses link to the corresponding `.text` bytes.
-- Multi-byte fields and pointers are eight-byte little-endian values. Cursor names are the specified eight-byte inline field.
+- All guest addresses are checked Python integers; none become native pointers.
+- The object heap begins exactly at `0x055200000`.
+- `.text` becomes read/execute-only after initialization; `.bss` and the heap remain writable.
+- `.text` contains labelled teaching bytecode for `add_cookie` and `win`.
+- `.bss` contains Cookies, User, Cursor-array, count, input-limit, function-table, flag, and win globals.
+- The Cursor pointer array is in `.bss`; each purchase appends the new heap address.
+- Functions renders a live name/address table with clickable `.text` destinations.
+- Multi-byte fields and pointers are eight-byte little-endian values; Cursor names are inline `char[8]` fields.
 
 ## Workshop primitives
 
-- Changing `max_field_size` permits the vulnerable username copy to overflow its adjacent allocation into `Cookies.cookies`.
+- The default `max_field_size` permits the username overflow into `Cookies.cookies`; the guest limit remains visible and editable for workshop experiments.
 - Cursor name overflow reaches the adjacent description and `on_clicked` pointers.
-- Opening a Cursor editor also opens Memory at that Cursor so the two surfaces can be used side by side.
-- Redirecting description to `Cursor.on_clicked` makes the description editor write through that pointer.
-- Setting `on_clicked` to the documented `win` address and clicking the Cursor executes the simulated win function.
-- Direct cookie edits, endianness exercises, struct edits, string pointer replacement, pointer tracing, nonsense-pointer recovery, forged structs with indirect writes, and function-table exploration are all supported without an in-game walkthrough.
+- Opening a Cursor editor opens Memory at that Cursor for side-by-side work.
+- Redirecting description to `Cursor.on_clicked` makes description editing write through that pointer.
+- Writing the `win` address and clicking the Cursor reaches the ending screen.
+- Direct cookie edits, endianness exercises, struct edits, string-pointer replacement, pointer tracing, nonsense-pointer recovery, forged structs, indirect writes, and function-table exploration are supported.
 
-## Product constraints
+## Complete Python port
 
-- The Rust/egui codebase is shared across Linux, Windows, and macOS.
-- CI runs formatting, strict linting, tests, and release builds on Ubuntu, Windows, and macOS.
-- Interface copy and editable default object strings live in `assets/strings.txt`.
-- The clickable cookie loads its human-replaceable placeholder sprite from `assets/cookie.sprite.txt` with nearest-neighbor scaling and text fallback.
-- The app uses egui defaults and placeholder assets. Project typography, palette, and final artwork remain human decisions. Red pointers and per-field diagnostic colors exist only because the memory-view specification requires them.
+- Game, memory, heap, debugger algorithms, saves, CLI, GUI, tests, and assets are Python.
+- Runtime dependencies are limited to the Python standard library, including `tkinter`.
+- The same sources run on Linux, Windows, and macOS; CI compiles and tests Python 3.11 on all three.
+- All interface copy and defaults live in `cookie_clicker/assets/strings.txt`.
+- The placeholder cookie lives in `cookie_clicker/assets/cookie.sprite.txt` and uses nearest-neighbor scaling.
+- Platform-default controls, typography, and colors are retained except for the diagnostic pointer/field colors required by the specification.

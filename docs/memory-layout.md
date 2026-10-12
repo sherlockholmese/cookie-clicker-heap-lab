@@ -16,7 +16,7 @@ All fields and pointers are eight-byte little-endian values unless stated otherw
 | `+0x08` | `User*` | Global User object |
 | `+0x10` | `Cursor**` | Cursor pointer array at `.bss + 0x100` |
 | `+0x18` | `u64` | Cursor count |
-| `+0x20` | `u64` | Maximum username input size, initially 32 |
+| `+0x20` | `u64` | Maximum username input size, initially 4096 so the teaching overflow is immediately available |
 | `+0x28` | pointer | Function table at `.bss + 0x300` |
 | `+0x30` | `u64` | Win state |
 | `+0x38` | `u64` | Flag-owned state |
