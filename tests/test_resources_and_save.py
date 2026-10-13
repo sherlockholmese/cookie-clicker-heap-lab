@@ -6,7 +6,7 @@ from cookie_clicker.game import Machine
 from cookie_clicker.app import parser
 from cookie_clicker.resources import COPY, cookie_sprite, text
 from cookie_clicker.save_state import SaveError, decode, encode, load, save
-from cookie_clicker.ui import parse_address, parse_field
+from cookie_clicker.qt_ui import parse_address, parse_field
 
 
 class ResourceAndSaveTests(unittest.TestCase):

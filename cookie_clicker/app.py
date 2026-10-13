@@ -8,7 +8,7 @@ import sys
 
 from .game import Machine
 from .save_state import load
-from .ui import CookieApp
+from .qt_ui import CookieApp
 
 
 def parser() -> argparse.ArgumentParser:
@@ -24,8 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         seed = arguments.seed if arguments.seed is not None else secrets.randbits(64)
         machine = load(arguments.load) if arguments.load else Machine(seed)
-        CookieApp(machine).run()
-        return 0
+        return CookieApp(machine).run()
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

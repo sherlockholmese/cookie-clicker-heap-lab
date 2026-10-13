@@ -15,7 +15,12 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 
 ## Memory tools
 
-- Memory is a separate native `Toplevel` window and is draggable by the operating system.
+> Status: implemented as a separate PyQt6 window (`qt_memory.py`), reachable
+> from the main menu's **Memory** button. The docked tooltip panel replaces the
+> old floating popups; the dump, coloring, scrolling, zoom, change-flash,
+> writes, jump, follow, and live function table carry over.
+
+- Memory is a separate PyQt6 window and is draggable by the operating system.
 - Byte mode is the default and renders 16-byte rows in visible 8+8 groups with adjacent ASCII.
 - The dump opens on the heap by default; the mouse wheel (and the vertical scrollbar) page through guest memory a row at a time, and `+`/`−`/reset controls (or Ctrl+wheel) zoom the dump font.
 - Qword mode reads and writes packed little-endian 64-bit values.
@@ -60,7 +65,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 ## Complete Python port
 
 - Game, memory, heap, debugger algorithms, saves, CLI, GUI, tests, and assets are Python.
-- Runtime dependencies are limited to the Python standard library, including `tkinter`.
+- Runtime dependencies are the Python standard library plus PyQt6 for the GUI.
 - The same sources run on Linux, Windows, and macOS; CI compiles and tests Python 3.11 on all three.
 - All interface copy and defaults live in `cookie_clicker/assets/strings.txt`.
 - The placeholder cookie lives in `cookie_clicker/assets/cookie.sprite.txt` and uses nearest-neighbor scaling.

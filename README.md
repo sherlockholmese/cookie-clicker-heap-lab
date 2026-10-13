@@ -1,16 +1,17 @@
 # Cookie Clicker Pwn Workshop
 
-A native, pure-Python teaching game for learning how values, structs, pointers, little-endian integers, buffer overflows, and function pointers appear in memory. Guest addresses live in checked Python byte arrays and never become native process pointers.
+A native teaching game for learning how values, structs, pointers, little-endian integers, buffer overflows, and function pointers appear in memory. Guest addresses live in checked Python byte arrays and never become native process pointers.
 
 ## Run
 
-Install Python 3.11 or newer with its standard `tkinter` module, then run:
+Install Python 3.11 or newer and the one runtime dependency (PyQt6), then run:
 
 ```sh
+pip install PyQt6
 python -m cookie_clicker
 ```
 
-No third-party runtime packages are required. `--seed NUMBER` starts a deterministic session and `--load FILE` opens an explicit save.
+PyQt6 is the only third-party runtime dependency; the game logic itself is pure standard library. `--seed NUMBER` starts a deterministic session and `--load FILE` opens an explicit save.
 
 ## Game
 
@@ -24,13 +25,13 @@ The worksheet remains separate from the application. The game contains no exploi
 
 ## Memory window
 
-Open **Memory** to use the draggable debugger window. It opens on the heap and provides 16-byte rows grouped 8+8, ASCII, packed little-endian qwords, direct writes, address jumps, section shortcuts, typed field hover details, pointer previews and following, a live function table, and two-way updates with the game. Scroll the mouse wheel (or drag the scrollbar) to move through memory a row at a time, and use the `+`/`−`/reset controls (or Ctrl+wheel) to zoom the dump font.
+Open **Memory** to use the separate draggable debugger window. It opens on the heap and shows monospace `ADDR | qword0 qword1 | ASCII` rows with `.bss` / `.text` / `heap` section shortcuts, a bytes/qwords toggle, address jump, and `+`/`−`/reset zoom (or Ctrl+wheel). Scroll the mouse wheel to move through memory a row at a time. Pointers are red and underlined, `.text` bytecode is orange (function entries red), string buffers are blue, and struct fields use distinct colors. A docked panel on the right shows a hover tooltip and the live function table. Hovering a field or pointer updates the tooltip; clicking a pointer navigates to its target; clicking a struct outlines it and shows its field breakdown. Bytes that change (from the game or a debugger write) briefly flash red. Edits made in the window update the game and vice-versa.
 
-Enable **Pointer view** to expose clickable guest addresses for the username, cookie count, and Cursor objects. Invalid data or function pointers produce a simulated segmentation fault and restore the last valid state.
+Enable **Pointer view** on the main menu to expose a guest-address hover tip for the username, cookie count, and Cursor objects. Invalid data or function pointers produce a simulated segmentation fault and restore the last valid state.
 
 ## Customize
 
-All interface copy and default strings live in [`cookie_clicker/assets/strings.txt`](cookie_clicker/assets/strings.txt). The clickable placeholder sprite lives in [`cookie_clicker/assets/cookie.sprite.txt`](cookie_clicker/assets/cookie.sprite.txt). The application uses platform-default `tkinter` controls and fonts.
+All interface copy and default strings live in [`cookie_clicker/assets/strings.txt`](cookie_clicker/assets/strings.txt). The clickable placeholder sprite lives in [`cookie_clicker/assets/cookie.sprite.txt`](cookie_clicker/assets/cookie.sprite.txt). The main menu is built with PyQt6; its layout and colors live in [`cookie_clicker/qt_ui.py`](cookie_clicker/qt_ui.py).
 
 ## Verify
 

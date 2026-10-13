@@ -7,7 +7,7 @@ name = "cookie-clicker-pwn"
 version = "1.0.0"
 description = "Pure-Python Cookie Clicker binary-exploitation workshop"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["PyQt6>=6.6"]
 
 [project.scripts]
 cookie-clicker-pwn = "cookie_clicker.app:main"

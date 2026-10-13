@@ -16,5 +16,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install PyQt6
       - run: python -m compileall -q cookie_clicker tests
       - run: python -m unittest discover -v
+      - name: Offscreen GUI smoke
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/gui_smoke.py
