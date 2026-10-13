@@ -13,9 +13,9 @@ from .game import (
     CURSOR_ON_CLICKED,
     CURSOR_PRICE,
     FLAG_PRICE,
-    FN_ADD_COOKIE,
-    FN_WIN,
+    FN_SLOT_SIZE,
     FUNCTION_TABLE,
+    FUNCTIONS,
     G_COOKIES,
     G_CURSOR_COUNT,
     G_CURSOR_TABLE,
@@ -34,6 +34,32 @@ from .game import (
 )
 from .memory import CODE, GLOBALS, HEAP, MemoryFault
 from .resources import cookie_sprite, text
+
+
+def bind_select_all(widget: tk.Widget) -> None:
+    """Make Ctrl+A / Cmd+A select all text in an Entry or Text widget.
+
+    tkinter does not bind this by default on every platform, so we add it
+    explicitly for the game's text inputs.
+    """
+
+    def _select_all(event: tk.Event) -> str:
+        target = event.widget
+        try:
+            if isinstance(target, tk.Text):
+                target.tag_add("sel", "1.0", "end-1c")
+                target.mark_set("insert", "end-1c")
+            else:
+                target.select_range(0, "end")  # type: ignore[attr-defined]
+                target.icursor("end")  # type: ignore[attr-defined]
+        except tk.TclError:
+            return ""
+        return "break"
+
+    widget.bind("<Control-a>", _select_all)
+    widget.bind("<Control-A>", _select_all)
+    widget.bind("<Command-a>", _select_all)
+    widget.bind("<Command-A>", _select_all)
 
 
 def parse_address(value: str) -> int:
@@ -64,10 +90,11 @@ def parse_field(value: str) -> bytes:
 
 
 class HoverPopup:
-    def __init__(self, owner: tk.Misc) -> None:
+    def __init__(self, owner: tk.Misc, hide_delay: int = 120) -> None:
         self.owner = owner
         self.window: tk.Toplevel | None = None
         self.pending: str | None = None
+        self.hide_delay = hide_delay
 
     def cancel_hide(self, _event: object = None) -> None:
         if self.pending:
@@ -76,7 +103,7 @@ class HoverPopup:
 
     def schedule_hide(self, _event: object = None) -> None:
         self.cancel_hide()
-        self.pending = self.owner.after(600, self.hide)
+        self.pending = self.owner.after(self.hide_delay, self.hide)
 
     def hide(self) -> None:
         if self.pending:
@@ -127,19 +154,39 @@ class HoverPopup:
 
 
 class MemoryWindow:
-    FIELD_COLORS = ("lightblue", "lightgreen", "khaki", "lightcoral")
+    # Distinct, higher-contrast per-field fill colors. Underlining is kept
+    # (per the spec) and these backgrounds make adjacent fields clearly
+    # different from one another.
+    FIELD_COLORS = ("#8ec8ff", "#8fe39a", "#ffe066", "#ff9a8c")
+    # Character buffers / string fields get their own highlight so students can
+    # distinguish text data from numeric fields and pointers at a glance.
+    STRING_COLOR = "#ffb3de"
+    # Each struct instance is wrapped in a solid bounding box drawn in a color
+    # keyed to its type so Cookies / User / Cursor blocks are easy to tell
+    # apart at a glance.
+    STRUCT_BORDERS = {
+        "struct Cookies": "#1f6feb",
+        "struct User": "#2ea043",
+        "struct Cursor": "#8957e5",
+    }
+    STRUCT_TYPES = frozenset(STRUCT_BORDERS)
 
     def __init__(self, app: "CookieApp") -> None:
         self.app = app
         self.window: tk.Toplevel | None = None
-        self.base = GLOBALS
+        self.base = HEAP
         self.qwords = False
+        self.row_count = 32
+        self.base_font_size = 0
+        self.zoom = 0
         self.selected: int | None = None
         self.jump_value: tk.StringVar | None = None
         self.edit_value: tk.StringVar | None = None
         self.mode_value: tk.StringVar | None = None
         self.status_value: tk.StringVar | None = None
         self.table: ttk.Frame | None = None
+        self.canvas: tk.Canvas | None = None
+        self.vertical_scrollbar: ttk.Scrollbar | None = None
         self.function_frame: ttk.Frame | None = None
         self.cells: list[list[tk.Label]] = []
         self.address_labels: list[ttk.Label] = []
@@ -147,6 +194,14 @@ class MemoryWindow:
         self.tooltip: HoverPopup | None = None
         self.normal_font: tkfont.Font | None = None
         self.underlined_font: tkfont.Font | None = None
+        self.bold_font: tkfont.Font | None = None
+        self.bold_underlined_font: tkfont.Font | None = None
+        self.bold_range: tuple[int, int] | None = None
+        self.cell_values: dict[int, int] = {}
+        self.flashing: set[int] = set()
+        self.flash_handles: dict[int, str] = {}
+        self._pending_scroll = 0
+        self._scroll_pending_handle: str | None = None
         self.function_signature: object = object()
         self.cell_states: list[list[tuple[object, ...] | None]] = []
         self.address_states: list[str | None] = []
@@ -172,8 +227,14 @@ class MemoryWindow:
         self.window.protocol("WM_DELETE_WINDOW", self.window.withdraw)
         self.tooltip = HoverPopup(self.window)
         self.normal_font = tkfont.nametofont("TkFixedFont").copy()
+        self.base_font_size = self.normal_font.cget("size") or 10
         self.underlined_font = self.normal_font.copy()
         self.underlined_font.configure(underline=True)
+        self.bold_font = self.normal_font.copy()
+        self.bold_font.configure(weight="bold")
+        self.bold_underlined_font = self.normal_font.copy()
+        self.bold_underlined_font.configure(weight="bold", underline=True)
+        self._apply_zoom_fonts()
 
         controls = ttk.Frame(self.window, padding=6)
         controls.pack(fill="x")
@@ -194,9 +255,20 @@ class MemoryWindow:
         ).pack(side="left")
         ttk.Label(controls, text=text("memory.address")).pack(side="left", padx=(14, 4))
         self.jump_value = tk.StringVar(value=f"0x{self.base:X}")
-        ttk.Entry(controls, textvariable=self.jump_value, width=18).pack(side="left")
+        jump_entry = ttk.Entry(controls, textvariable=self.jump_value, width=18)
+        jump_entry.pack(side="left")
+        bind_select_all(jump_entry)
         ttk.Button(controls, text=text("memory.jump"), command=self._jump_from_entry).pack(
             side="left", padx=4
+        )
+        ttk.Button(controls, text=text("memory.zoom_out"), width=3, command=lambda: self._adjust_zoom(-1)).pack(
+            side="left", padx=(14, 0)
+        )
+        ttk.Button(controls, text=text("memory.zoom_in"), width=3, command=lambda: self._adjust_zoom(1)).pack(
+            side="left", padx=(2, 0)
+        )
+        ttk.Button(controls, text=text("memory.zoom_reset"), command=lambda: self._adjust_zoom(0, reset=True)).pack(
+            side="left", padx=(2, 0)
         )
 
         sections = ttk.Frame(self.window, padding=(6, 0, 6, 4))
@@ -216,7 +288,9 @@ class MemoryWindow:
         self.selected_label = ttk.Label(editor, text="—", width=20)
         self.selected_label.pack(side="left")
         self.edit_value = tk.StringVar()
-        ttk.Entry(editor, textvariable=self.edit_value, width=22).pack(side="left")
+        edit_entry = ttk.Entry(editor, textvariable=self.edit_value, width=22)
+        edit_entry.pack(side="left")
+        bind_select_all(edit_entry)
         ttk.Button(editor, text=text("memory.write"), command=self._write_selected).pack(
             side="left", padx=4
         )
@@ -233,9 +307,11 @@ class MemoryWindow:
         container = ttk.Frame(self.window)
         container.pack(fill="both", expand=True)
         canvas = tk.Canvas(container, highlightthickness=0)
-        vertical = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        vertical = ttk.Scrollbar(container, orient="vertical", command=self._scrollbar_scroll)
         horizontal = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
-        canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        canvas.configure(xscrollcommand=horizontal.set)
+        self.canvas = canvas
+        self.vertical_scrollbar = vertical
         vertical.pack(side="right", fill="y")
         horizontal.pack(side="bottom", fill="x")
         canvas.pack(side="left", fill="both", expand=True)
@@ -245,7 +321,130 @@ class MemoryWindow:
             "<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all"))
         )
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(item, height=max(event.height, 1)))
+        for widget in (canvas, self.table):
+            widget.bind("<MouseWheel>", self._on_mouse_wheel)
+            widget.bind("<Button-4>", self._on_mouse_wheel)
+            widget.bind("<Button-5>", self._on_mouse_wheel)
         self._rebuild_grid()
+
+    def _scrollbar_scroll(self, *args: str) -> None:
+        # The vertical scrollbar pages through guest memory a row at a time
+        # rather than panning a fixed widget, so the dump is effectively
+        # infinite within the mapped regions.
+        if not args:
+            return
+        if args[0] == "scroll":
+            amount = int(args[1])
+            step = self.row_count if args[2] == "pages" else 1
+            self._scroll_rows(amount * step)
+        elif args[0] == "moveto":
+            region = self._current_region()
+            if region is None:
+                return
+            start, size = region
+            fraction = max(0.0, min(1.0, float(args[1])))
+            target = start + int(fraction * max(size - self.row_count * 16, 0))
+            self.base = target & ~0xF
+            if self.jump_value is not None:
+                self.jump_value.set(f"0x{self.base:X}")
+            self.refresh()
+
+    def _current_region(self) -> tuple[int, int] | None:
+        for region in self.app.machine.memory.regions:
+            if region.base <= self.base < region.base + region.size:
+                return region.base, region.size
+        return None
+
+    def _update_scrollbar(self) -> None:
+        if self.vertical_scrollbar is None:
+            return
+        region = self._current_region()
+        if region is None:
+            self.vertical_scrollbar.set(0.0, 1.0)
+            return
+        start, size = region
+        span = self.row_count * 16
+        offset = self.base - start
+        first = offset / size if size else 0.0
+        last = min(1.0, (offset + span) / size) if size else 1.0
+        self.vertical_scrollbar.set(max(0.0, first), max(first, last))
+
+    def _on_mouse_wheel(self, event: tk.Event) -> str:
+        if getattr(event, "state", 0) & 0x0004:  # Control held -> zoom
+            direction = 1 if getattr(event, "delta", 0) > 0 or event.num == 4 else -1
+            self._adjust_zoom(direction)
+            return "break"
+        if getattr(event, "num", None) == 4:
+            rows = -1
+        elif getattr(event, "num", None) == 5:
+            rows = 1
+        else:
+            # One notch == one row. Trackpads report finer deltas; accumulate
+            # them so a flick still moves a sensible amount.
+            delta = getattr(event, "delta", 0)
+            rows = -1 if delta > 0 else 1
+            if abs(delta) >= 120:
+                rows = -(delta // 120)
+        self._queue_scroll(rows)
+        return "break"
+
+    def _queue_scroll(self, rows: int) -> None:
+        # Coalesce a burst of wheel events into a single refresh on the next
+        # idle cycle, so fast scrolling stays smooth instead of running a full
+        # redraw per event.
+        self._pending_scroll += rows
+        if self._scroll_pending_handle is None and self.window is not None:
+            self._scroll_pending_handle = self.window.after_idle(self._flush_scroll)
+
+    def _flush_scroll(self) -> None:
+        self._scroll_pending_handle = None
+        rows, self._pending_scroll = self._pending_scroll, 0
+        if rows:
+            self._scroll_rows(rows)
+
+    def _mapped_bounds(self) -> tuple[int, int] | None:
+        regions = self.app.machine.memory.regions
+        if not regions:
+            return None
+        lowest = min(region.base for region in regions)
+        highest = max(region.base + region.size for region in regions)
+        return lowest, highest
+
+    def _scroll_rows(self, rows: int) -> None:
+        bounds = self._mapped_bounds()
+        new_base = self.base + rows * 16
+        if bounds is not None:
+            lowest, highest = bounds
+            # Keep the top of the dump within mapped memory: never scroll up
+            # past the first mapped region, and keep at least one row of mapped
+            # bytes visible when scrolling down.
+            new_base = max(lowest, min(new_base, highest - 16))
+        if new_base < 0:
+            new_base = 0
+        self.base = new_base & ~0xF
+        if self.jump_value is not None:
+            self.jump_value.set(f"0x{self.base:X}")
+        self.refresh()
+
+    def _apply_zoom_fonts(self) -> None:
+        if self.normal_font is None or self.underlined_font is None:
+            return
+        size = max(6, self.base_font_size + self.zoom)
+        self.normal_font.configure(size=size)
+        self.underlined_font.configure(size=size)
+        if self.bold_font is not None:
+            self.bold_font.configure(size=size)
+        if self.bold_underlined_font is not None:
+            self.bold_underlined_font.configure(size=size)
+
+    def _adjust_zoom(self, direction: int, *, reset: bool = False) -> None:
+        if reset:
+            self.zoom = 0
+        else:
+            self.zoom = max(-4, min(24, self.zoom + direction))
+        self._apply_zoom_fonts()
+        self._rebuild_grid()
+        self.refresh()
 
     def _change_mode(self) -> None:
         self.qwords = self.mode_value is not None and self.mode_value.get() == "qwords"
@@ -263,11 +462,22 @@ class MemoryWindow:
         self.cell_states.clear()
         self.address_states.clear()
         self.ascii_states.clear()
+        # Granularity (byte vs qword) changes with the mode, so the value cache
+        # and any in-flight change flashes must be reset to avoid false flashes.
+        for handle in self.flash_handles.values():
+            try:
+                self.window.after_cancel(handle)
+            except (tk.TclError, AttributeError):
+                pass
+        self.flash_handles.clear()
+        self.flashing.clear()
+        self.cell_values.clear()
         width = 16 if self.qwords else 2
         count = 2 if self.qwords else 16
-        for row in range(32):
-            address = ttk.Label(self.table, width=16, font="TkFixedFont", anchor="e")
+        for row in range(self.row_count):
+            address = ttk.Label(self.table, width=16, font=self.normal_font, anchor="e")
             address.grid(row=row, column=0, padx=(0, 8), sticky="e")
+            self._bind_wheel(address)
             self.address_labels.append(address)
             self.address_states.append(None)
             row_cells: list[tk.Label] = []
@@ -282,13 +492,47 @@ class MemoryWindow:
                     padx=1,
                 )
                 cell.grid(row=row, column=column + 1, padx=pad, sticky="w")
+                self._bind_wheel(cell)
+                # Bind interaction events once (not every refresh). The address
+                # is resolved from the fixed grid position + current base at
+                # event time, which keeps scrolling cheap.
+                cell.bind("<Button-1>", lambda _e, r=row, c=column: self._cell_click(r, c))
+                cell.bind("<Double-Button-1>", lambda _e, r=row, c=column: self._cell_double(r, c))
+                cell.bind(
+                    "<Enter>",
+                    lambda event, r=row, c=column: self._show_cell_info(
+                        event.widget, self._cell_address(r, c)
+                    ),
+                )
+                cell.bind("<Leave>", self._on_cell_leave)
                 row_cells.append(cell)
             self.cells.append(row_cells)
             self.cell_states.append([None] * count)
-            ascii_label = ttk.Label(self.table, width=16, font="TkFixedFont", anchor="w")
+            ascii_label = ttk.Label(self.table, width=16, font=self.normal_font, anchor="w")
             ascii_label.grid(row=row, column=count + 1, padx=(12, 0), sticky="w")
+            self._bind_wheel(ascii_label)
             self.ascii_labels.append(ascii_label)
             self.ascii_states.append(None)
+
+    def _bind_wheel(self, widget: tk.Widget) -> None:
+        widget.bind("<MouseWheel>", self._on_mouse_wheel)
+        widget.bind("<Button-4>", self._on_mouse_wheel)
+        widget.bind("<Button-5>", self._on_mouse_wheel)
+
+    def _cell_address(self, row: int, column: int) -> int:
+        return self.base + row * 16 + column * (8 if self.qwords else 1)
+
+    def _cell_click(self, row: int, column: int) -> None:
+        address = self._cell_address(row, column)
+        try:
+            raw = self.app.machine.read_memory(address, 8 if self.qwords else 1)
+        except MemoryFault:
+            return
+        value = int.from_bytes(raw, "little")
+        self._select(address, value)
+
+    def _cell_double(self, row: int, column: int) -> None:
+        self._double_click(self._cell_address(row, column))
 
     def _jump_from_entry(self) -> None:
         try:
@@ -339,7 +583,7 @@ class MemoryWindow:
         table = GLOBALS + G_CURSOR_TABLE
         if table <= address < table + MAX_CURSORS * 8:
             return table + ((address - table) // 8) * 8
-        if FUNCTION_TABLE <= address < FUNCTION_TABLE + 16:
+        if FUNCTION_TABLE <= address < FUNCTION_TABLE + len(FUNCTIONS) * 8:
             return FUNCTION_TABLE + ((address - FUNCTION_TABLE) // 8) * 8
         for allocation in self.app.machine.allocations:
             if (
@@ -365,11 +609,33 @@ class MemoryWindow:
         except MemoryFault:
             return None
 
+    def string_region(self, address: int) -> tuple[int, int] | None:
+        """Return the (base, length) of the character buffer containing address.
+
+        Covers the heap string buffers (username / Cursor description) and the
+        inline ``char[8]`` Cursor name field. Returns ``None`` for non-string
+        bytes.
+        """
+        for allocation in self.app.machine.allocations:
+            if not allocation.base <= address < allocation.base + allocation.size:
+                continue
+            if allocation.semantic_type in (
+                "char username[32]",
+                "char Cursor.description[64]",
+            ):
+                return allocation.base, allocation.size
+            if allocation.semantic_type == "struct Cursor":
+                offset = address - allocation.base
+                if CURSOR_NAME <= offset < CURSOR_NAME + 8:
+                    return allocation.base + CURSOR_NAME, 8
+        return None
+
     def field_color(self, address: int) -> str | None:
-        if FN_ADD_COOKIE <= address < FN_ADD_COOKIE + 16:
-            return self.FIELD_COLORS[0]
-        if FN_WIN <= address < FN_WIN + 8:
-            return self.FIELD_COLORS[1]
+        for index, (_key, entry) in enumerate(FUNCTIONS):
+            if entry <= address < entry + FN_SLOT_SIZE:
+                return self.FIELD_COLORS[index % len(self.FIELD_COLORS)]
+        if self.string_region(address) is not None:
+            return self.STRING_COLOR
         for allocation in self.app.machine.allocations:
             if allocation.base <= address < allocation.base + allocation.size:
                 offset = address - allocation.base
@@ -380,6 +646,20 @@ class MemoryWindow:
                 else:
                     field_index = 0
                 return self.FIELD_COLORS[field_index]
+        return None
+
+    def struct_border_color(self, address: int) -> str | None:
+        """Border color for a cell that falls inside a struct instance.
+
+        Used to draw a bounding box around each Cookies / User / Cursor block
+        so struct boundaries are obvious in the dump.
+        """
+        for allocation in self.app.machine.allocations:
+            if (
+                allocation.semantic_type in self.STRUCT_TYPES
+                and allocation.base <= address < allocation.base + allocation.size
+            ):
+                return self.STRUCT_BORDERS[allocation.semantic_type]
         return None
 
     def field_info(self, address: int) -> str | None:
@@ -412,24 +692,19 @@ class MemoryWindow:
                 f"{text('schema.value')} 0x{value:016X}\n{text('schema.address')} 0x{base:016X}",
                 address,
             )
-        for base, name in (
-            (FUNCTION_TABLE, text("functions.add_cookie")),
-            (FUNCTION_TABLE + 8, text("functions.win")),
-        ):
+        for index, (key, _entry) in enumerate(FUNCTIONS):
+            base = FUNCTION_TABLE + index * 8
             if base <= address < base + 8:
                 value = self.app.machine.memory.read_u64(base)
                 return self._with_pointer_preview(
-                    f"{name}\n{text('schema.function_pointer')}\n{text('schema.value')} 0x{value:016X}",
+                    f"{text(key)}\n{text('schema.function_pointer')}\n{text('schema.value')} 0x{value:016X}",
                     address,
                 )
-        for start, end, name in (
-            (FN_ADD_COOKIE, FN_ADD_COOKIE + 16, text("functions.add_cookie")),
-            (FN_WIN, FN_WIN + 8, text("functions.win")),
-        ):
-            if start <= address < end:
+        for key, entry in FUNCTIONS:
+            if entry <= address < entry + FN_SLOT_SIZE:
                 return (
-                    f"{name}\n{text('schema.bytecode_function')}\n"
-                    f"{text('schema.offset')} +0x{address-start:X}\n"
+                    f"{text(key)}\n{text('schema.bytecode_function')}\n"
+                    f"{text('schema.offset')} +0x{address-entry:X}\n"
                     f"{text('schema.address')} 0x{address:016X}"
                 )
         for allocation in self.app.machine.allocations:
@@ -475,10 +750,10 @@ class MemoryWindow:
                 elif kind in (text("schema.char_pointer"), text("schema.function_pointer")):
                     number = int.from_bytes(raw, "little")
                     symbol = ""
-                    if number == FN_ADD_COOKIE:
-                        symbol = f" ({text('functions.add_cookie')})"
-                    elif number == FN_WIN:
-                        symbol = f" ({text('functions.win')})"
+                    for function_key, function_entry in FUNCTIONS:
+                        if number == function_entry:
+                            symbol = f" ({text(function_key)})"
+                            break
                     value = f"0x{number:016X}{symbol}"
                 else:
                     value = "".join(chr(byte) if 32 <= byte < 127 else "." for byte in raw)
@@ -534,6 +809,49 @@ class MemoryWindow:
         info = self.field_info(address)
         if info:
             self.tooltip.show_text(widget, info)
+        # When hovering a pointer that targets a character buffer, bold that
+        # string's bytes in the dump (if they are currently visible).
+        new_range: tuple[int, int] | None = None
+        if self.pointer_field_base(address) is not None:
+            target = self.pointer_target(address)
+            if target is not None:
+                region = self.string_region(target)
+                if region is not None:
+                    base, length = region
+                    new_range = (base, base + length)
+        if new_range != self.bold_range:
+            self.bold_range = new_range
+            self.refresh()
+
+    def _clear_bold(self, _event: object = None) -> None:
+        if self.bold_range is not None:
+            self.bold_range = None
+            self.refresh()
+
+    def _start_flash(self, address: int) -> None:
+        """Flash a changed cell red briefly, then let it revert to normal."""
+        if self.window is None:
+            return
+        self.flashing.add(address)
+        existing = self.flash_handles.get(address)
+        if existing is not None:
+            try:
+                self.window.after_cancel(existing)
+            except tk.TclError:
+                pass
+        self.flash_handles[address] = self.window.after(
+            450, lambda a=address: self._end_flash(a)
+        )
+
+    def _end_flash(self, address: int) -> None:
+        self.flashing.discard(address)
+        self.flash_handles.pop(address, None)
+        self.refresh()
+
+    def _on_cell_leave(self, event: object = None) -> None:
+        if self.tooltip is not None:
+            self.tooltip.schedule_hide(event)
+        self._clear_bold(event)
 
     def _render_functions(self) -> None:
         assert self.function_frame is not None
@@ -570,6 +888,7 @@ class MemoryWindow:
         if self.window is None or not self.window.winfo_exists() or self.window.state() == "withdrawn":
             return
         self._render_functions()
+        self._update_scrollbar()
         if self.status_value is not None:
             if self.status_value.get() != self.app.status:
                 self.status_value.set(self.app.status)
@@ -579,7 +898,8 @@ class MemoryWindow:
             self.follow_button.state(["disabled"])
         else:
             self.follow_button.state(["!disabled"])
-        for row in range(32):
+        window_bg = self.window.cget("background")
+        for row in range(self.row_count):
             base = self.base + row * 16
             address_text = f"{base:016X}"
             if self.address_states[row] != address_text:
@@ -598,30 +918,53 @@ class MemoryWindow:
                 )
                 for column, (cell, value) in enumerate(zip(self.cells[row], values, strict=True)):
                     address = base + column * (8 if self.qwords else 1)
+                    # Flash a cell red when its displayed value changes for any
+                    # reason (game tick, direct edit, overflow, pointer follow).
+                    previous = self.cell_values.get(address)
+                    if previous is not None and previous != value:
+                        self._start_flash(address)
+                    self.cell_values[address] = value
+                    flash = address in self.flashing
                     pointer = self.pointer_field_base(address) is not None
-                    background = self.field_color(address) or self.window.cget("background")
+                    border_color = self.struct_border_color(address)
+                    field = self.field_color(address)
                     display = f"{value:016X}" if self.qwords else f"{value:02X}"
-                    font = (
-                        self.underlined_font
-                        if self.field_color(address) is not None or pointer
-                        else self.normal_font
+                    bold = (
+                        self.bold_range is not None
+                        and self.bold_range[0] <= address < self.bold_range[1]
                     )
+                    decorated = field is not None or pointer
+                    if bold:
+                        font = self.bold_underlined_font if decorated else self.bold_font
+                    elif decorated:
+                        font = self.underlined_font
+                    else:
+                        font = self.normal_font
+                    if flash:
+                        background = "red"
+                        foreground = "white"
+                    else:
+                        background = field or window_bg
+                        foreground = "red" if pointer else "black"
                     relief = "sunken" if self.selected == address else "flat"
-                    state = (display, pointer, background, font, relief, address, value)
+                    highlight = border_color or window_bg
+                    thickness = 2 if border_color is not None else 0
+                    state = (
+                        display, pointer, background, foreground, font, relief,
+                        highlight, thickness, bold, flash, address, value,
+                    )
                     if self.cell_states[row][column] == state:
                         continue
                     cell.configure(
                         text=display,
-                        fg="red" if pointer else "black",
+                        fg=foreground,
                         bg=background,
                         font=font,
                         relief=relief,
+                        highlightthickness=thickness,
+                        highlightbackground=highlight,
+                        highlightcolor=highlight,
                     )
-                    cell.bind("<Button-1>", lambda _event, a=address, v=value: self._select(a, v))
-                    cell.bind("<Double-Button-1>", lambda _event, a=address: self._double_click(a))
-                    cell.bind("<Enter>", lambda event, a=address: self._show_cell_info(event.widget, a))
-                    if self.tooltip is not None:
-                        cell.bind("<Leave>", self.tooltip.schedule_hide)
                     self.cell_states[row][column] = state
             except MemoryFault:
                 unmapped = text("memory.unmapped")
@@ -629,14 +972,19 @@ class MemoryWindow:
                     self.ascii_labels[row].configure(text=unmapped)
                     self.ascii_states[row] = unmapped
                 for column, cell in enumerate(self.cells[row]):
-                    state = ("--", False, self.window.cget("background"), self.normal_font, "flat")
+                    address = base + column * (8 if self.qwords else 1)
+                    self.cell_values.pop(address, None)
+                    state = ("--", False, window_bg, self.normal_font, "flat")
                     if self.cell_states[row][column] != state:
                         cell.configure(
                             text="--",
                             fg="black",
-                            bg=self.window.cget("background"),
+                            bg=window_bg,
                             font=self.normal_font,
                             relief="flat",
+                            highlightthickness=0,
+                            highlightbackground=window_bg,
+                            highlightcolor=window_bg,
                         )
                         self.cell_states[row][column] = state
 
@@ -653,13 +1001,16 @@ class CursorEditor:
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text=text("cursor.name")).pack(anchor="w")
         self.name = tk.StringVar(value=cursor.name)
-        ttk.Entry(frame, textvariable=self.name).pack(fill="x")
+        name_entry = ttk.Entry(frame, textvariable=self.name)
+        name_entry.pack(fill="x")
+        bind_select_all(name_entry)
         ttk.Button(frame, text=text("cursor.name.update"), command=self.update_name).pack(
             anchor="w", pady=(4, 12)
         )
         ttk.Label(frame, text=text("cursor.description")).pack(anchor="w")
         self.description = tk.Text(frame, height=5, width=48)
         self.description.insert("1.0", cursor.description)
+        bind_select_all(self.description)
         self.description.pack(fill="both", expand=True)
         ttk.Button(
             frame, text=text("cursor.description.update"), command=self.update_description
@@ -684,9 +1035,10 @@ class CookieApp:
         self.root.minsize(500, 560)
         self.pointer_mode = tk.BooleanVar(value=False)
         self.username = tk.StringVar(value=self.safe_view().username)
+        self._last_synced_username = self.username.get()
         self.status_value = tk.StringVar()
         self.memory = MemoryWindow(self)
-        self.pointer_tooltip = HoverPopup(self.root)
+        self.pointer_tooltip = HoverPopup(self.root, hide_delay=600)
         self.cookie_image = self._load_cookie_image()
         self.cursor_editors: list[CursorEditor] = []
         self.cursor_signature: tuple[tuple[object, ...], ...] | None = None
@@ -738,6 +1090,7 @@ class CookieApp:
         )
         self.username_entry = ttk.Entry(self.user_row, textvariable=self.username)
         self.username_entry.pack(side="left", fill="x", expand=True, padx=6)
+        bind_select_all(self.username_entry)
         ttk.Button(
             self.user_row,
             text=text("game.username.change"),
@@ -910,6 +1263,13 @@ class CookieApp:
         if not self.play_frame.winfo_manager():
             self.play_frame.pack(fill="both", expand=True)
         self.user_label.configure(text=f"{text('game.user')} {view.username}")
+        # Sync the editable textbox only when the username changes in the model
+        # (memory edit, overflow, rename), not on every refresh. Comparing the
+        # entry to the view would wipe whatever the user is currently typing on
+        # the next 50 ms tick, so we compare against the last value we synced.
+        if view.username != self._last_synced_username:
+            self._last_synced_username = view.username
+            self.username.set(view.username)
         self.cookie_count.configure(text=f"{view.cookies} {text('game.cookies')}")
         if view.cookies < CURSOR_PRICE:
             self.buy_cursor_button.state(["disabled"])

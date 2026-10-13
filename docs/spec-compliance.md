@@ -17,6 +17,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 
 - Memory is a separate native `Toplevel` window and is draggable by the operating system.
 - Byte mode is the default and renders 16-byte rows in visible 8+8 groups with adjacent ASCII.
+- The dump opens on the heap by default; the mouse wheel (and the vertical scrollbar) page through guest memory a row at a time, and `+`/`−`/reset controls (or Ctrl+wheel) zoom the dump font.
 - Qword mode reads and writes packed little-endian 64-bit values.
 - Individual bytes and qwords are selectable and writable.
 - Direct address entry and `.text`, `.bss`, heap, and function-table shortcuts are present.
@@ -41,7 +42,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 - All guest addresses are checked Python integers; none become native pointers.
 - The object heap begins exactly at `0x055200000`.
 - `.text` becomes read/execute-only after initialization; `.bss` and the heap remain writable.
-- `.text` contains labelled teaching bytecode for `add_cookie` and `win`.
+- `.text` contains deterministic, realistic-looking bytecode in fixed 0x40-byte slots for `add_cookie`, `win`, and the inert `add_cursor`, `delete_cursor`, and `modify_cursor` helpers; hover tooltips and the function table supply the names.
 - `.bss` contains Cookies, User, Cursor-array, count, input-limit, function-table, flag, and win globals.
 - The Cursor pointer array is in `.bss`; each purchase appends the new heap address.
 - Functions renders a live name/address table with clickable `.text` destinations.

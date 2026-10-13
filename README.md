@@ -24,7 +24,7 @@ The worksheet remains separate from the application. The game contains no exploi
 
 ## Memory window
 
-Open **Memory** to use the draggable debugger window. It provides 16-byte rows grouped 8+8, ASCII, packed little-endian qwords, direct writes, address jumps, section shortcuts, typed field hover details, pointer previews and following, a live function table, and two-way updates with the game.
+Open **Memory** to use the draggable debugger window. It opens on the heap and provides 16-byte rows grouped 8+8, ASCII, packed little-endian qwords, direct writes, address jumps, section shortcuts, typed field hover details, pointer previews and following, a live function table, and two-way updates with the game. Scroll the mouse wheel (or drag the scrollbar) to move through memory a row at a time, and use the `+`/`−`/reset controls (or Ctrl+wheel) to zoom the dump font.
 
 Enable **Pointer view** to expose clickable guest addresses for the username, cookie count, and Cursor objects. Invalid data or function pointers produce a simulated segmentation fault and restore the last valid state.
 

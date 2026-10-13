@@ -5,6 +5,9 @@ from cookie_clicker.game import (
     CURSOR_ON_CLICKED,
     FLAG_PRICE,
     FN_ADD_COOKIE,
+    FN_ADD_CURSOR,
+    FN_DELETE_CURSOR,
+    FN_MODIFY_CURSOR,
     FN_WIN,
     FUNCTION_TABLE,
     G_CURSOR_COUNT,
@@ -39,7 +42,11 @@ class GameTests(unittest.TestCase):
         self.assertEqual(machine.memory.read_u64(view.user_ptr + USER_ID), 1)
         self.assertEqual(machine.memory.read_u64(view.user_ptr + USER_USERNAME), HEAP)
         self.assertEqual(machine.memory.read_u64(GLOBALS + G_CURSORS), GLOBALS + 0x100)
-        self.assertEqual(machine.memory.read(FN_ADD_COOKIE, 10), b"ADD_COOKIE")
+        # .text now holds realistic function bytecode rather than name labels:
+        # every slot opens with the standard push rbp / mov rbp, rsp prologue
+        # and is read/execute-only.
+        self.assertEqual(machine.memory.read(FN_ADD_COOKIE, 4), b"\x55\x48\x89\xe5")
+        self.assertEqual(machine.memory.read(FN_WIN, 4), b"\x55\x48\x89\xe5")
         with self.assertRaises(MemoryFault):
             machine.write_memory(FN_WIN, b"X")
 
@@ -91,10 +98,26 @@ class GameTests(unittest.TestCase):
         machine = Machine(1)
         self.assertEqual(
             machine.function_table(),
-            ((text("functions.add_cookie"), FN_ADD_COOKIE), (text("functions.win"), FN_WIN)),
+            (
+                (text("functions.add_cookie"), FN_ADD_COOKIE),
+                (text("functions.win"), FN_WIN),
+                (text("functions.add_cursor"), FN_ADD_CURSOR),
+                (text("functions.delete_cursor"), FN_DELETE_CURSOR),
+                (text("functions.modify_cursor"), FN_MODIFY_CURSOR),
+            ),
         )
         machine.write_memory(FUNCTION_TABLE, FN_WIN.to_bytes(8, "little"))
         self.assertEqual(machine.function_table()[0][1], FN_WIN)
+
+    def test_auxiliary_functions_are_inert(self) -> None:
+        machine = funded_machine()
+        cursor = machine.view().cursors[0].address
+        for entry in (FN_ADD_CURSOR, FN_DELETE_CURSOR, FN_MODIFY_CURSOR):
+            machine.write_memory(cursor + CURSOR_ON_CLICKED, entry.to_bytes(8, "little"))
+            before = machine.export()
+            machine.invoke_cursor(0)
+            # No-op helpers must not win, add cookies, or otherwise mutate state.
+            self.assertEqual(machine.export(), before)
 
     def test_direct_callback_and_intended_overflow_call_win(self) -> None:
         direct = funded_machine()

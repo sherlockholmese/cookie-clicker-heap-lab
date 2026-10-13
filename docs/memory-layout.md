@@ -21,7 +21,16 @@ All fields and pointers are eight-byte little-endian values unless stated otherw
 | `+0x30` | `u64` | Win state |
 | `+0x38` | `u64` | Flag-owned state |
 
-The function table contains `add_cookie` (`0x00400100`) followed by `win` (`0x00400180`). The corresponding `.text` locations contain labelled teaching bytecode rather than native instructions.
+The function table lists `add_cookie` (`0x00400100`), `win` (`0x00400180`),
+`add_cursor` (`0x00400200`), `delete_cursor` (`0x00400280`), and
+`modify_cursor` (`0x00400300`), in that order. Each `.text` entry occupies a
+0x40-byte slot filled with deterministic, realistic-looking x86-64-style
+bytecode (a standard prologue, a stable pseudo-random body, and a `ret`
+epilogue padded with `int3`). The bytes are illustrative only and are never
+executed; hovering a slot and the live function table supply the friendly
+names. `add_cursor`, `delete_cursor`, and `modify_cursor` are intentional
+no-ops: valid entry points that leave game state untouched when a Cursor's
+`on_clicked` pointer references them.
 
 ## Heap objects
 

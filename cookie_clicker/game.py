@@ -30,9 +30,74 @@ CURSOR_NAME = 8
 CURSOR_DESCRIPTION = 16
 CURSOR_ON_CLICKED = 24
 
+# Each function occupies a fixed-size slot in .text and is filled with
+# deterministic, realistic-looking (but non-executed) x86-64-style bytecode.
+FN_SLOT_SIZE = 0x40
 FN_ADD_COOKIE = CODE + 0x100
 FN_WIN = CODE + 0x180
+FN_ADD_CURSOR = CODE + 0x200
+FN_DELETE_CURSOR = CODE + 0x280
+FN_MODIFY_CURSOR = CODE + 0x300
 FUNCTION_TABLE = GLOBALS + 0x300
+
+# (name key, entry address) pairs rendered in the live function table. The
+# auxiliary cursor helpers are deliberate no-ops: they exist so the .text
+# section and function table look like a real program with several routines.
+FUNCTIONS: tuple[tuple[str, int], ...] = (
+    ("functions.add_cookie", FN_ADD_COOKIE),
+    ("functions.win", FN_WIN),
+    ("functions.add_cursor", FN_ADD_CURSOR),
+    ("functions.delete_cursor", FN_DELETE_CURSOR),
+    ("functions.modify_cursor", FN_MODIFY_CURSOR),
+)
+
+# Function entry points that merely add a cookie / do nothing when a Cursor's
+# on_clicked pointer happens to reference them. Keeping them inert means the
+# teaching heap stays deterministic no matter which helper is wired up.
+_NOOP_FUNCTIONS = frozenset({FN_ADD_CURSOR, FN_DELETE_CURSOR, FN_MODIFY_CURSOR})
+
+
+def _fake_bytecode(entry: int, size: int) -> bytes:
+    """Generate deterministic, plausible-looking x86-64 bytecode for a slot.
+
+    This is *not* a faithful assembler. The goal (per spec.md) is for .text to
+    contain likely-looking machine code rather than human-readable labels, so
+    hovering shows real-looking opcodes while the function table and tooltips
+    supply the friendly names. Output is fully determined by ``entry`` so saves
+    and tests stay reproducible.
+    """
+
+    # push rbp; mov rbp, rsp; sub rsp, 0x10  (a standard function prologue)
+    body = bytearray(b"\x55\x48\x89\xe5\x48\x83\xec\x10")
+    # A short, repeatable instruction menu keyed off the entry address so each
+    # function has a distinct-but-stable body. Each entry pairs an opcode with
+    # the number of pseudo-random operand bytes that follow it.
+    snippets: tuple[tuple[bytes, int], ...] = (
+        (b"\x48\x8b\x05", 4),  # mov rax, [rip+disp32]
+        (b"\x48\x83\xc0\x01", 0),  # add rax, 1
+        (b"\x48\x89\x05", 4),  # mov [rip+disp32], rax
+        (b"\x48\x8d\x3d", 4),  # lea rdi, [rip+disp32]
+        (b"\xe8", 4),  # call rel32
+        (b"\x31\xc0", 0),  # xor eax, eax
+        (b"\x48\x85\xc0", 0),  # test rax, rax
+        (b"\x74", 1),  # jz rel8
+        (b"\x48\x89\xc7", 0),  # mov rdi, rax
+        (b"\x90", 0),  # nop
+    )
+    state = (entry >> 4) & 0xFF
+    while len(body) < size - 2:
+        opcode, operand = snippets[state % len(snippets)]
+        body += opcode
+        for _ in range(operand):
+            if len(body) >= size - 2:
+                break
+            state = (state * 1103515245 + 12345) & 0xFF
+            body.append(state)
+        state = (state + len(body) * 7 + 1) & 0xFF
+    # pop rbp; ret  (standard epilogue) then pad with int3 breakpoints.
+    body = body[: size - 2] + bytearray(b"\x5d\xc3")
+    body += b"\xcc" * (size - len(body))
+    return bytes(body[:size])
 
 
 class GameError(Exception):
@@ -79,8 +144,8 @@ class Machine:
         self.memory.map_region(CODE, 0x1000, read=True, write=True, execute=False, kind=".text")
         self.memory.map_region(GLOBALS, 0x1000, read=True, write=True, execute=False, kind=".bss")
         self.memory.map_region(HEAP, HEAP_SIZE, read=True, write=True, execute=False, kind="heap")
-        self.memory.write(FN_ADD_COOKIE, b"ADD_COOKIE\x01\0\0\0\0\0", initialize=True)
-        self.memory.write(FN_WIN, b"WIN\x01\0\0\0\0", initialize=True)
+        for _key, entry in FUNCTIONS:
+            self.memory.write(entry, _fake_bytecode(entry, FN_SLOT_SIZE), initialize=True)
         self.memory.set_permissions(CODE, read=True, write=False, execute=True)
         self.heap = Heap()
         self._initialize()
@@ -105,8 +170,8 @@ class Machine:
         }
         for offset, value in values.items():
             self._write_u64(GLOBALS + offset, value)
-        self._write_u64(FUNCTION_TABLE, FN_ADD_COOKIE)
-        self._write_u64(FUNCTION_TABLE + 8, FN_WIN)
+        for index, (_key, entry) in enumerate(FUNCTIONS):
+            self._write_u64(FUNCTION_TABLE + index * 8, entry)
 
     def clone(self) -> "Machine":
         return copy.deepcopy(self)
@@ -243,6 +308,10 @@ class Machine:
                 self.click()
             elif function == FN_WIN:
                 self._write_u64(GLOBALS + G_WON, 1)
+            elif function in _NOOP_FUNCTIONS:
+                # add_cursor / delete_cursor / modify_cursor are inert helpers:
+                # a valid .text entry point that intentionally does nothing.
+                pass
             else:
                 raise SegmentationFault(function)
         except Exception:
@@ -264,9 +333,9 @@ class Machine:
                 self.invoke_cursor(index)
 
     def function_table(self) -> tuple[tuple[str, int], ...]:
-        return (
-            (text("functions.add_cookie"), self._read_u64(FUNCTION_TABLE)),
-            (text("functions.win"), self._read_u64(FUNCTION_TABLE + 8)),
+        return tuple(
+            (text(key), self._read_u64(FUNCTION_TABLE + index * 8))
+            for index, (key, _entry) in enumerate(FUNCTIONS)
         )
 
     @property
