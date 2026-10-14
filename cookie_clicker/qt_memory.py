@@ -1,15 +1,3 @@
-"""Separate PyQt6 memory / hexdump window for the Cookie Clicker workshop.
-
-Layout follows layout/layout.pdf: section shortcuts (.bss/.text/heap) and a
-bytes/qwords toggle above a monospace dump (ADDR | qword0 qword1 | ASCII), with
-a docked "tooltip" panel on the right that updates on hover. Pointers are red,
-.text bytecode is orange (function entry rows red), strings are blue, struct
-fields use distinct colors, and a clicked struct is outlined with a struct
-tooltip. Features carried over from the earlier tkinter build: row-at-a-time
-scrolling, zoom, change-flash, direct writes, jump, follow, live function
-table, two-way game sync, and segfault revert.
-"""
-
 from __future__ import annotations
 
 from typing import Callable
@@ -17,6 +5,7 @@ from typing import Callable
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -28,16 +17,25 @@ from PyQt6.QtWidgets import (
 )
 
 from .game import (
+    CURSOR_DESCRIPTION,
+    CURSOR_ID,
     CURSOR_NAME,
+    CURSOR_ON_CLICKED,
     FN_SLOT_SIZE,
     FUNCTION_TABLE,
     FUNCTIONS,
     G_COOKIES,
+    G_CURSOR_COUNT,
     G_CURSOR_TABLE,
     G_CURSORS,
+    G_FLAG_OWNED,
     G_FUNCTIONS,
+    G_MAX_FIELD_SIZE,
     G_USER,
+    G_WON,
     MAX_CURSORS,
+    USER_ID,
+    USER_USERNAME,
     Machine,
 )
 from .memory import CODE, GLOBALS, HEAP, MemoryFault
@@ -46,15 +44,18 @@ from .resources import text
 ROW_COUNT = 13
 BYTES_PER_ROW = 16
 
-# Diagnostic colors (keep aesthetic values here for easy retuning).
-COLOR_POINTER = "#d00000"       # pointers: red
+COLOR_POINTER = "#d00000"       # function pointers / .text entries: red
+COLOR_POINTER_DARK = "#ff0000"  # pure red for text on the dark grey tooltip
 COLOR_BYTECODE = "#e08a2c"      # .text bytecode body: orange
-COLOR_STRING = "#2060d0"        # string buffers: blue
+COLOR_STRING = "#2ea043"        # char buffers / char* pointers: green
+COLOR_INT = "#1f6feb"           # integer fields: blue
+COLOR_STRUCT_PTR = "#e08a2c"    # pointers to structs: orange
 COLOR_SELECTED_BG = "#ffd9a0"
 COLOR_PLAIN = "#333333"
 COLOR_FLASH_BG = "#ff5050"
 STRUCT_FIELD_COLORS = ("#1f6feb", "#2ea043", "#b08900", "#8957e5")
 STRUCT_BORDER = "#595959"
+TOOLTIP_LABEL = "#333333"       # neutral tooltip text on the light-grey panel
 
 WINDOW_STYLE = """
 QWidget#memroot { background: white; }
@@ -63,7 +64,7 @@ QPushButton#section, QPushButton#mode {
 }
 QPushButton#section:checked, QPushButton#mode:checked { background: #d7d7d7; font-weight: bold; }
 QLabel#title { background: #efefef; border: 1px solid #595959; padding: 5px; }
-QLabel#tooltip { background: #595959; color: #d9d9d9; padding: 10px 16px; }
+QLabel#tooltip { background: #bcbcbc; padding: 10px 16px;}
 QLineEdit#jump { background: #efefef; border: 1px solid #595959; padding: 3px; }
 """
 
@@ -72,25 +73,23 @@ class MemoryWindow(QWidget):
     def __init__(self, machine: Machine, on_change: Callable[[], None] | None = None) -> None:
         super().__init__()
         self.machine = machine
-        # on_change lets the main menu re-render after a debugger write.
         self.on_change = on_change
         self.base = HEAP
         self.qwords = True
         self.selected: int | None = None
         self.struct_outline: tuple[int, int] | None = None  # (base, size) when a struct is clicked
         self.bold_range: tuple[int, int] | None = None
+        self._heap_list_signature: tuple | None = None
         self.font_size = 13
-        self._effective_size = 13
 
-        # change-flash and value tracking
         self.cell_values: dict[int, int] = {}
+        self._cell_style_cache: dict = {}
         self.flashing: set[int] = set()
         self.flash_handles: dict[int, QTimer] = {}
 
         self.setObjectName("memroot")
         self.setWindowTitle(text("memory.title"))
         self.setStyleSheet(WINDOW_STYLE)
-        self.resize(900, 460)
         self._mono = QFont("Courier New", self.font_size)
 
         self.addr_cells: list[QLabel] = []
@@ -101,7 +100,6 @@ class MemoryWindow(QWidget):
         self._build()
         self.refresh()
 
-    # ---------- construction ----------
     def _build(self) -> None:
         outer = QHBoxLayout(self)
         outer.setContentsMargins(14, 12, 14, 12)
@@ -124,6 +122,7 @@ class MemoryWindow(QWidget):
             btn.setObjectName("section")
             btn.setCheckable(True)
             btn.clicked.connect(lambda _c, a=address: self.jump_to(a))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             controls.addWidget(btn)
             self.section_buttons[key] = btn
         controls.addSpacing(12)
@@ -159,6 +158,25 @@ class MemoryWindow(QWidget):
         reset.setObjectName("section")
         reset.clicked.connect(lambda: self._zoom(0, reset=True))
         nav.addWidget(reset)
+
+        # selection + write + follow live on the top bar
+        nav.addSpacing(12)
+        self.selected_label = QLabel("\u2014")
+        self.selected_label.setFont(self._mono)
+        nav.addWidget(self.selected_label)
+        self.edit_value = QLineEdit()
+        self.edit_value.setObjectName("jump")
+        self.edit_value.setFixedWidth(140)
+        self.edit_value.returnPressed.connect(self._write_selected)
+        nav.addWidget(self.edit_value)
+        write_btn = QPushButton(text("memory.write"))
+        write_btn.setObjectName("section")
+        write_btn.clicked.connect(self._write_selected)
+        nav.addWidget(write_btn)
+        self.follow_btn = QPushButton(text("memory.follow"))
+        self.follow_btn.setObjectName("section")
+        self.follow_btn.clicked.connect(self._follow_selected)
+        nav.addWidget(self.follow_btn)
         nav.addStretch()
         left.addLayout(nav)
 
@@ -166,45 +184,13 @@ class MemoryWindow(QWidget):
         title.setObjectName("title")
         left.addWidget(title)
 
-        # dump grid, inside a scroll area so a tiling WM that shrinks the window
-        # never overlaps columns — the dump scrolls instead.
+        # dump grid (fixed-size window, so no scroll area is needed)
         self.grid_host = QWidget()
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(2, 2, 2, 2)
         self.grid.setHorizontalSpacing(10)
         self.grid.setVerticalSpacing(1)
-        self.dump_scroll = QScrollArea()
-        self.dump_scroll.setWidget(self.grid_host)
-        self.dump_scroll.setWidgetResizable(True)
-        self.dump_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        # The wheel drives memory paging and the dump auto-fits the window
-        # width, so neither scrollbar is needed.
-        self.dump_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.dump_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.dump_scroll.viewport().installEventFilter(self)
-        left.addWidget(self.dump_scroll, 1)
-
-        # selection editor + write
-        editor = QHBoxLayout()
-        editor.setSpacing(6)
-        self.selected_label = QLabel("\u2014")
-        self.selected_label.setFont(self._mono)
-        editor.addWidget(self.selected_label)
-        self.edit_value = QLineEdit()
-        self.edit_value.setObjectName("jump")
-        self.edit_value.setFixedWidth(170)
-        self.edit_value.returnPressed.connect(self._write_selected)
-        editor.addWidget(self.edit_value)
-        write_btn = QPushButton(text("memory.write"))
-        write_btn.setObjectName("section")
-        write_btn.clicked.connect(self._write_selected)
-        editor.addWidget(write_btn)
-        self.follow_btn = QPushButton(text("memory.follow"))
-        self.follow_btn.setObjectName("section")
-        self.follow_btn.clicked.connect(self._follow_selected)
-        editor.addWidget(self.follow_btn)
-        editor.addStretch()
-        left.addLayout(editor)
+        left.addWidget(self.grid_host)
 
         self.status = QLabel("")
         self.status.setStyleSheet("color: #595959;")
@@ -239,6 +225,23 @@ class MemoryWindow(QWidget):
         self.fn_table.setFixedWidth(230)
         self.fn_table.setAlignment(Qt.AlignmentFlag.AlignTop)
         right.addWidget(self.fn_table)
+
+        self.heap_title = QLabel(text("memory.heap_objects"))
+        self.heap_title.setObjectName("title")
+        self.heap_title.setFixedWidth(230)
+        right.addWidget(self.heap_title)
+        self.heap_scroll = QScrollArea()
+        self.heap_scroll.setWidgetResizable(True)
+        self.heap_scroll.setFixedWidth(230)
+        self.heap_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.heap_list_inner = QWidget()
+        self.heap_list_layout = QVBoxLayout(self.heap_list_inner)
+        self.heap_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.heap_list_layout.setSpacing(2)
+        self.heap_list_layout.addStretch()
+        self.heap_scroll.setWidget(self.heap_list_inner)
+        right.addWidget(self.heap_scroll)
+
         right.addStretch()
 
         self._build_grid()
@@ -255,12 +258,13 @@ class MemoryWindow(QWidget):
         self.ascii_cells.clear()
         self._cell_pos.clear()
         self.cell_values.clear()
+        self._cell_style_cache.clear()
 
         count = 2 if self.qwords else BYTES_PER_ROW
         metrics = self._mono_metrics()
         digits = 16 if self.qwords else 2
-        # +1 glyph for the selection caret slot, + padding
-        cell_w = metrics.horizontalAdvance("0" * (digits + 1)) + 4
+        # cell width = the hex digits + a little padding
+        cell_w = metrics.horizontalAdvance("0" * digits) + 10
         addr_w = metrics.horizontalAdvance("0x000000000") + 16
         ascii_w = metrics.horizontalAdvance("0" * (BYTES_PER_ROW + 1)) + 6
         for row in range(ROW_COUNT):
@@ -276,6 +280,8 @@ class MemoryWindow(QWidget):
                 cell = QLabel()
                 cell.setFont(self._mono)
                 cell.setFixedWidth(cell_w)
+                cell.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                cell.setCursor(Qt.CursorShape.PointingHandCursor)
                 cell.setMouseTracking(True)
                 cell.installEventFilter(self)
                 self._cell_pos[cell] = (row, col)
@@ -290,54 +296,29 @@ class MemoryWindow(QWidget):
             ascii_label.setFixedWidth(ascii_w)
             self.grid.addWidget(ascii_label, row, sep_col + 1)
             self.ascii_cells.append(ascii_label)
-        # Content width at the current font size; used to auto-fit the window.
         sep_w = metrics.horizontalAdvance("0") + 10
         gap = metrics.horizontalAdvance("0") if not self.qwords else 0
-        self._content_width = addr_w + sep_w + count * cell_w + gap + sep_w + ascii_w + 24
-        self.grid_host.setMinimumHeight(metrics.height() * (ROW_COUNT + 1) + 10)
-        # Keep the rows packed at the top rather than stretched over the height
-        # a tiling WM may give us.
+        dump_w = addr_w + sep_w + count * cell_w + gap + sep_w + ascii_w + 24
+        self.grid_host.setFixedWidth(dump_w)
+        self.grid_host.setFixedHeight(metrics.height() * (ROW_COUNT + 1) + 10)
         self.grid.setRowStretch(ROW_COUNT, 1)
+        # Single overlay box drawn around a whole struct on hover.
+        self.struct_box = QFrame(self.grid_host)
+        self.struct_box.setStyleSheet(
+            f"background: transparent; border: 2px solid {STRUCT_BORDER};"
+        )
+        self.struct_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.struct_box.hide()
+        byte_cell_w = metrics.horizontalAdvance("00") + 10
+        byte_dump_w = addr_w + sep_w + 16 * byte_cell_w + metrics.horizontalAdvance("0") + sep_w + ascii_w + 24
+        window_w = byte_dump_w + 300
+        window_h = metrics.height() * (ROW_COUNT + 1) + 150
+        self.setFixedSize(window_w, window_h)
 
     def _mono_metrics(self):
         from PyQt6.QtGui import QFontMetrics
 
         return QFontMetrics(self._mono)
-
-    def _content_width_for(self, size: int) -> int:
-        from PyQt6.QtGui import QFontMetrics
-
-        metrics = QFontMetrics(QFont("Courier New", size))
-        count = 2 if self.qwords else BYTES_PER_ROW
-        digits = 16 if self.qwords else 2
-        cell_w = metrics.horizontalAdvance("0" * (digits + 1)) + 4
-        addr_w = metrics.horizontalAdvance("0x000000000") + 16
-        ascii_w = metrics.horizontalAdvance("0" * (BYTES_PER_ROW + 1)) + 6
-        sep_w = metrics.horizontalAdvance("0") + 10
-        gap = metrics.horizontalAdvance("0") if not self.qwords else 0
-        return addr_w + sep_w + count * cell_w + gap + sep_w + ascii_w + 24
-
-    def _fit_font(self) -> None:
-        """Shrink the dump font so a full row fits the window — never scroll."""
-        available = self.dump_scroll.viewport().width()
-        if available <= 0:
-            return
-        available -= 6  # small margin so the last column never touches the edge
-        # Largest size up to the user's chosen zoom that still fits the width;
-        # a low floor keeps the full row visible even in a narrow tile.
-        best = 5
-        for size in range(5, self.font_size + 1):
-            if self._content_width_for(size) <= available:
-                best = size
-        if best != self._effective_size:
-            self._effective_size = best
-            self._mono = QFont("Courier New", best)
-            self._build_grid()
-            self.refresh()
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._fit_font()
 
     def _sep(self) -> QLabel:
         bar = QLabel("|")
@@ -404,23 +385,17 @@ class MemoryWindow(QWidget):
             self.font_size = 13
         else:
             self.font_size = max(7, min(28, self.font_size + direction))
-        # Rebuild at the user's requested size, then clamp to the width.
-        self._effective_size = self.font_size
         self._mono = QFont("Courier New", self.font_size)
         self._build_grid()
-        self._fit_font()
         self.refresh()
 
     def _toggle_mode(self) -> None:
         self.qwords = self.mode_btn.isChecked()
         self.mode_btn.setText(text("memory.bytes") if self.qwords else text("memory.qwords"))
-        self._effective_size = self.font_size
         self._mono = QFont("Courier New", self.font_size)
         self._build_grid()
-        self._fit_font()
         self.refresh()
 
-    # ---------- decoration helpers (reused game-aware logic) ----------
     def pointer_field_base(self, address: int) -> int | None:
         for offset in (G_COOKIES, G_USER, G_CURSORS, G_FUNCTIONS):
             base = GLOBALS + offset
@@ -469,32 +444,78 @@ class MemoryWindow(QWidget):
         return None
 
     def _is_pointer_cell(self, address: int) -> bool:
-        if self.pointer_field_base(address) is not None:
-            return True
-        slot = self.function_slot(address)
-        return slot is not None and address < slot[1] + 8
+        return self._field_kind(address) in ("ptr:function", "ptr:char", "ptr:struct")
 
-    def _byte_color(self, address: int) -> str:
-        """Foreground color for a byte/qword cell per the layout mockup."""
+    def _field_kind(self, address: int) -> str | None:
+        """Classify the field a byte/qword belongs to, by semantic type.
+
+        Returns one of: int, char, bytecode, ptr:function, ptr:char,
+        ptr:struct, or None for unclassified bytes.
+        """
+        # .text: first qword of a slot is the function entry pointer, rest is
+        # bytecode.
         slot = self.function_slot(address)
         if slot is not None:
-            _key, entry = slot
-            return COLOR_POINTER if address < entry + 8 else COLOR_BYTECODE
-        if self.pointer_field_base(address) is not None:
-            return COLOR_POINTER
-        if self.string_region(address) is not None:
-            return COLOR_STRING
-        allocation = self.struct_at(address)
-        if allocation is not None:
-            offset = address - allocation.base
-            if allocation.semantic_type == "struct User":
-                index = 0 if offset < 8 else 1
-            elif allocation.semantic_type == "struct Cursor":
-                index = min(offset // 8, 3)
-            else:
-                index = 0
-            return STRUCT_FIELD_COLORS[index]
-        return COLOR_PLAIN
+            return "ptr:function" if address < slot[1] + 8 else "bytecode"
+
+        # .bss global pointer table + scalars
+        g_fields = {
+            G_COOKIES: "ptr:struct",
+            G_USER: "ptr:struct",
+            G_CURSORS: "ptr:struct",   # Cursor** -> cursor pointer array
+            G_CURSOR_COUNT: "int",
+            G_MAX_FIELD_SIZE: "int",
+            G_FUNCTIONS: "ptr:function",
+            G_WON: "int",
+            G_FLAG_OWNED: "int",
+        }
+        for offset, kind in g_fields.items():
+            if GLOBALS + offset <= address < GLOBALS + offset + 8:
+                return kind
+        table = GLOBALS + G_CURSOR_TABLE
+        if table <= address < table + MAX_CURSORS * 8:
+            return "ptr:struct"       # Cursor* entries point to Cursor structs
+        if FUNCTION_TABLE <= address < FUNCTION_TABLE + len(FUNCTIONS) * 8:
+            return "ptr:function"
+
+        # heap allocations
+        for alloc in self.machine.allocations:
+            if not alloc.base <= address < alloc.base + alloc.size:
+                continue
+            offset = address - alloc.base
+            semantic = alloc.semantic_type
+            if semantic == "struct Cookies":
+                return "int"
+            if semantic == "struct User":
+                if offset < USER_USERNAME:
+                    return "int"      # id
+                return "ptr:char"     # char* username
+            if semantic == "struct Cursor":
+                if offset < CURSOR_NAME:
+                    return "int"      # id
+                if offset < CURSOR_DESCRIPTION:
+                    return "char"     # char[8] name
+                if offset < CURSOR_ON_CLICKED:
+                    return "ptr:char"  # char* description
+                return "ptr:function"  # on_clicked
+            if semantic.startswith("char "):
+                return "char"
+            return None
+        return None
+
+    def _kind_color(self, kind: str | None) -> str:
+        return {
+            "int": COLOR_INT,
+            "char": COLOR_STRING,
+            "bytecode": COLOR_BYTECODE,
+            "ptr:function": COLOR_POINTER,
+            "ptr:char": COLOR_STRING,
+            "ptr:struct": COLOR_STRUCT_PTR,
+        }.get(kind, COLOR_PLAIN)
+
+    def _byte_color(self, address: int) -> str:
+        """Foreground color for a byte/qword cell, by field type."""
+        return self._kind_color(self._field_kind(address))
 
     # ---------- rendering ----------
     def _row_base(self, row: int) -> int:
@@ -515,7 +536,7 @@ class MemoryWindow(QWidget):
         self.follow_btn.setEnabled(
             self.selected is not None and self.pointer_field_base(self.selected) is not None
         )
-        self._render_function_table()
+        self._update_context_panel()
 
         count = 2 if self.qwords else BYTES_PER_ROW
         for row in range(ROW_COUNT):
@@ -524,10 +545,13 @@ class MemoryWindow(QWidget):
             try:
                 raw = self.machine.read_memory(base, BYTES_PER_ROW)
             except MemoryFault:
+                unmapped_style = f"color: {COLOR_PLAIN};"
                 for col, cell in enumerate(self.value_cells[row]):
-                    cell.setText("--")
-                    cell.setStyleSheet(f"color: {COLOR_PLAIN};")
                     self.cell_values.pop(self._cell_address(row, col), None)
+                    if self._cell_style_cache.get(cell) != ("--", unmapped_style):
+                        cell.setText("--")
+                        cell.setStyleSheet(unmapped_style)
+                        self._cell_style_cache[cell] = ("--", unmapped_style)
                 self.ascii_cells[row].setText(text("memory.unmapped"))
                 continue
             ascii_text = "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
@@ -546,36 +570,94 @@ class MemoryWindow(QWidget):
                 self.cell_values[address] = value
                 self._style_cell(cell, address, value)
         self._apply_selection_marks()
+        self._update_struct_overlay()
 
     def _style_cell(self, cell: QLabel, address: int, value: int) -> None:
         display = f"{value:016X}" if self.qwords else f"{value:02X}"
         color = self._byte_color(address)
         is_pointer = self._is_pointer_cell(address)
         bold = self.bold_range is not None and self.bold_range[0] <= address < self.bold_range[1]
-        in_struct_outline = (
-            self.struct_outline is not None
-            and self.struct_outline[0] <= address < self.struct_outline[0] + self.struct_outline[1]
-        )
-        css = [f"color: {color};"]
+        css = [f"color: {color};", "padding: 0px;"]
+        # A constant transparent 1px border keeps the cell box model stable so
+        # selection/flash never shift the digits. The struct outline is drawn
+        # as a single overlay box (see _update_struct_overlay), not per cell.
+        css.append("border: 1px solid transparent;")
         if is_pointer:
-            css.append("text-decoration: underline; font-weight: bold;")
-        elif bold:
+            css.append("text-decoration: underline;")
+        if bold:
             css.append("font-weight: bold;")
         if address in self.flashing:
             css.append(f"background: {COLOR_FLASH_BG}; color: white;")
         elif self.selected == address:
             css.append(f"background: {COLOR_SELECTED_BG};")
-        if in_struct_outline:
-            css.append(f"border: 1px solid {STRUCT_BORDER};")
-        cell.setStyleSheet(" ".join(css))
-        caret = "\u25b8" if self.selected == address else "\u2007"  # figure space keeps width
-        cell.setText(caret + display)
+        style = " ".join(css)
+        # Only touch the widget when something actually changed, so hovering and
+        # scrolling don't trigger needless repaints (flicker).
+        cached = self._cell_style_cache.get(cell)
+        if cached != (display, style):
+            cell.setStyleSheet(style)
+            cell.setText(display)
+            self._cell_style_cache[cell] = (display, style)
+
+    def _restyle_cells(self) -> None:
+        """Re-apply only cell styling (for hover bold) without reading memory or
+        rebuilding side panels, then reposition the struct overlay box."""
+        for row in range(ROW_COUNT):
+            for col, cell in enumerate(self.value_cells[row]):
+                address = self._cell_address(row, col)
+                value = self.cell_values.get(address)
+                if value is not None:
+                    self._style_cell(cell, address, value)
+        self._update_struct_overlay()
+
+    def _update_struct_overlay(self) -> None:
+        """Draw one box enclosing every visible cell of the hovered struct."""
+        box = getattr(self, "struct_box", None)
+        if box is None:
+            return
+        if self.struct_outline is None:
+            box.hide()
+            return
+        start, size = self.struct_outline
+        end = start + size
+        rect = None
+        for row in range(ROW_COUNT):
+            for col, cell in enumerate(self.value_cells[row]):
+                address = self._cell_address(row, col)
+                width = 8 if self.qwords else 1
+                if address + width <= start or address >= end:
+                    continue
+                # cell geometry mapped into grid_host coordinates
+                top_left = cell.mapTo(self.grid_host, cell.rect().topLeft())
+                geo = cell.rect().translated(top_left)
+                rect = geo if rect is None else rect.united(geo)
+        if rect is None:
+            box.hide()
+            return
+        rect = rect.adjusted(-2, -1, 2, 1)
+        box.setGeometry(rect)
+        box.raise_()
+        box.show()
 
     def _apply_selection_marks(self) -> None:
         if self.selected is None:
             self.selected_label.setText("\u2014")
         else:
             self.selected_label.setText(f"0x{self.selected:016X}")
+
+    def _update_context_panel(self) -> None:
+        region = self._current_region()
+        in_text = region is not None and region[0] == CODE
+        in_heap = region is not None and region[0] == HEAP
+        # Function table only in .text; heap struct list only in heap view.
+        self.fn_title.setVisible(in_text)
+        self.fn_table.setVisible(in_text)
+        self.heap_title.setVisible(in_heap)
+        self.heap_scroll.setVisible(in_heap)
+        if in_text:
+            self._render_function_table()
+        elif in_heap:
+            self._render_heap_list()
 
     def _render_function_table(self) -> None:
         try:
@@ -590,7 +672,39 @@ class MemoryWindow(QWidget):
         ]
         self.fn_table.setText("<br>".join(lines))
 
-    # ---------- flash ----------
+    def _render_heap_list(self) -> None:
+        struct_names = {
+            "struct Cookies": text("schema.object.cookies"),
+            "struct User": text("schema.object.user"),
+            "struct Cursor": text("schema.object.cursor"),
+        }
+        structs = [
+            (struct_names[alloc.semantic_type], alloc.base)
+            for alloc in self.machine.allocations
+            if getattr(alloc, "live", True) and alloc.semantic_type in struct_names
+        ]
+        signature = tuple(structs)
+        if signature == self._heap_list_signature:
+            return  # unchanged -> don't tear down/rebuild (avoids flicker)
+        self._heap_list_signature = signature
+        while self.heap_list_layout.count():
+            item = self.heap_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        for name, base in structs:
+            entry = QLabel(
+                f"<span style='color:{COLOR_PLAIN}'>{name}</span><br>"
+                f"<span style='color:{COLOR_STRUCT_PTR}'><u>0x{base:09X}</u></span>"
+            )
+            entry.setFont(QFont("Courier New", 11))
+            entry.setTextFormat(Qt.TextFormat.RichText)
+            entry.setCursor(Qt.CursorShape.PointingHandCursor)
+            entry.mousePressEvent = lambda _e, a=base: self.jump_to(a)  # type: ignore[assignment]
+            self.heap_list_layout.addWidget(entry)
+        self.heap_list_layout.addStretch()
+
     def _flash(self, address: int) -> None:
         self.flashing.add(address)
         timer = self.flash_handles.get(address)
@@ -616,16 +730,18 @@ class MemoryWindow(QWidget):
                 self._hover(self._cell_address(row, col))
             elif etype == QEvent.Type.MouseButtonPress:
                 self._click(self._cell_address(row, col))
-        elif event.type() == QEvent.Type.Wheel and obj is self.dump_scroll.viewport():
-            self.wheelEvent(event)
-            return True
         return super().eventFilter(obj, event)
 
     def _hover(self, address: int) -> None:
         info = self._hover_text(address)
         if info:
             self.tooltip.setText(info)
-        new_range = None
+        # Struct outline: show the bounding box around the entire struct when
+        # hovering any of its fields; clear when leaving the struct.
+        allocation = self.struct_at(address)
+        new_outline = (allocation.base, allocation.size) if allocation is not None else None
+        # Bold the target string when hovering a char* pointer.
+        new_range: tuple[int, int] | None = None
         base = self.pointer_field_base(address)
         if base is not None:
             try:
@@ -635,20 +751,65 @@ class MemoryWindow(QWidget):
                     new_range = (region[0], region[0] + region[1])
             except MemoryFault:
                 pass
-        if new_range != self.bold_range:
-            self.bold_range = new_range
-            self.refresh()
+        if new_outline == self.struct_outline and new_range == self.bold_range:
+            return  # nothing visual changed -> no repaint, no flicker
+        self.struct_outline = new_outline
+        self.bold_range = new_range
+        self._restyle_cells()
+
+    def _pointer_field_type(self, address: int) -> str:
+        """Declared type of a pointer field (for .bss table entries)."""
+        exact = {
+            GLOBALS + G_COOKIES: text("schema.cookies_pointer"),
+            GLOBALS + G_USER: text("schema.user_pointer"),
+            GLOBALS + G_CURSORS: text("schema.cursor_array_pointer"),
+            GLOBALS + G_FUNCTIONS: text("schema.functions"),
+        }
+        base = self.pointer_field_base(address)
+        if base in exact:
+            return exact[base]
+        table = GLOBALS + G_CURSOR_TABLE
+        if base is not None and table <= base < table + MAX_CURSORS * 8:
+            return f"{text('schema.cursor')}*"
+        if base is not None and FUNCTION_TABLE <= base < FUNCTION_TABLE + len(FUNCTIONS) * 8:
+            return text("schema.function_pointer")
+        return ""
+
+    def _pointee_label(self, target: int) -> str:
+        """Human label describing what a pointer target actually is."""
+        # a mapped heap struct?
+        allocation = self.struct_at(target)
+        if allocation is not None:
+            return {
+                "struct Cookies": text("schema.object.cookies"),
+                "struct User": text("schema.object.user"),
+                "struct Cursor": text("schema.object.cursor"),
+            }.get(allocation.semantic_type, allocation.semantic_type)
+        # a .text function entry?
+        slot = self.function_slot(target)
+        if slot is not None:
+            return text(slot[0])
+        # the .bss cursor pointer array / function table?
+        if target == GLOBALS + G_CURSOR_TABLE:
+            return text("schema.object.cursor_array")
+        if target == FUNCTION_TABLE:
+            return text("schema.object.function_table")
+        # any other heap allocation (e.g. a char buffer)
+        for alloc in self.machine.allocations:
+            if alloc.base <= target < alloc.base + alloc.size:
+                return alloc.semantic_type
+        return text("schema.pointer")
 
     def _hover_text(self, address: int) -> str:
         slot = self.function_slot(address)
         if slot is not None:
             key, entry = slot
             return (
-                f"<span style='color:{COLOR_POINTER}'>{text(key)}</span> "
-                f"<span style='color:#d9d9d9'>{text('schema.bytecode_function')}</span><br>"
-                f"<span style='color:#d9d9d9'>{text('schema.offset')} +0x{address-entry:X}</span><br>"
-                f"<span style='color:#d9d9d9'>{text('schema.address')} </span>"
-                f"<span style='color:{COLOR_POINTER}'><u>0x{address:09X}</u></span>"
+                f"<span style='color:{COLOR_POINTER_DARK}'>{text(key)}</span> "
+                f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.bytecode_function')}</span><br>"
+                f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.offset')} +0x{address-entry:X}</span><br>"
+                f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.address')} </span>"
+                f"<span style='color:{COLOR_POINTER_DARK}'><u>0x{address:09X}</u></span>"
             )
         base = self.pointer_field_base(address)
         if base is not None:
@@ -664,16 +825,23 @@ class MemoryWindow(QWidget):
                     raw = b""
                 preview = "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
                 return (
-                    f"<span style='color:#d9d9d9'>{text('schema.char_pointer')} "
+                    f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.char_pointer')} "
                     f"{text('schema.address')} </span>"
-                    f"<span style='color:{COLOR_POINTER}'><u>0x{target:09X}</u></span><br><br>"
-                    f"<i style='color:#d9d9d9'>ASCII: {preview}</i>"
+                    f"<span style='color:{COLOR_POINTER_DARK}'><u>0x{target:09X}</u></span><br><br>"
+                    f"<i style='color:{TOOLTIP_LABEL}'>ASCII: {preview}</i>"
                 )
+            # Describe the pointer field itself and, in detail, what it targets.
+            field_type = self._pointer_field_type(address)
+            target_label = self._pointee_label(target)
+            type_line = (
+                f"<i style='color:{TOOLTIP_LABEL}'>{field_type}</i><br>" if field_type else ""
+            )
             return (
-                f"<span style='color:#d9d9d9'>{text('schema.points_to')} </span>"
-                f"<span style='color:{COLOR_POINTER}'>{text('schema.pointer')}</span><br>"
-                f"<span style='color:#d9d9d9'>{text('schema.address')} </span>"
-                f"<span style='color:{COLOR_POINTER}'><u>0x{target:09X}</u></span>"
+                f"{type_line}"
+                f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.points_to')} </span>"
+                f"<span style='color:{COLOR_POINTER_DARK}'>{target_label}</span><br>"
+                f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.address')} </span>"
+                f"<span style='color:{COLOR_POINTER_DARK}'><u>0x{target:09X}</u></span>"
             )
         allocation = self.struct_at(address)
         if allocation is not None:
@@ -689,29 +857,30 @@ class MemoryWindow(QWidget):
             "struct Cursor": text("schema.object.cursor"),
         }.get(allocation.semantic_type, allocation.semantic_type)
         header = (
-            f"<span style='color:#d9d9d9'>{name} {text('schema.address')} </span>"
-            f"<span style='color:{COLOR_POINTER}'><u>0x{allocation.base:09X}</u></span>"
+            f"<span style='color:{TOOLTIP_LABEL}'>{name} {text('schema.address')} </span>"
+            f"<span style='color:{COLOR_POINTER_DARK}'><u>0x{allocation.base:09X}</u></span>"
         )
         if allocation.semantic_type == "struct Cookies":
-            fields = [(text("schema.u64"), text("schema.cookies"), STRUCT_FIELD_COLORS[0])]
+            raw_fields = [(text("schema.u64"), text("schema.cookies"), 0)]
         elif allocation.semantic_type == "struct User":
-            fields = [
-                (text("schema.u64"), text("schema.id"), STRUCT_FIELD_COLORS[0]),
-                (text("schema.char_pointer"), text("schema.username"), STRUCT_FIELD_COLORS[1]),
+            raw_fields = [
+                (text("schema.u64"), text("schema.id"), 0),
+                (text("schema.char_pointer"), text("schema.username"), 8),
             ]
         elif allocation.semantic_type == "struct Cursor":
-            fields = [
-                (text("schema.u64"), text("schema.id"), STRUCT_FIELD_COLORS[0]),
-                (text("schema.char8"), text("schema.name"), STRUCT_FIELD_COLORS[1]),
-                (text("schema.char_pointer"), text("schema.description"), STRUCT_FIELD_COLORS[2]),
-                (text("schema.function_pointer"), text("schema.on_clicked"), STRUCT_FIELD_COLORS[3]),
+            raw_fields = [
+                (text("schema.u64"), text("schema.id"), 0),
+                (text("schema.char8"), text("schema.name"), 8),
+                (text("schema.char_pointer"), text("schema.description"), 16),
+                (text("schema.function_pointer"), text("schema.on_clicked"), 24),
             ]
         else:
-            fields = []
+            raw_fields = []
         lines = [header, ""]
-        for ctype, fname, color in fields:
+        for ctype, fname, offset in raw_fields:
+            color = self._kind_color(self._field_kind(allocation.base + offset))
             lines.append(
-                f"<i style='color:#d9d9d9'>{ctype}</i> "
+                f"<i style='color:{TOOLTIP_LABEL}'>{ctype}</i> "
                 f"<span style='color:{color}'>{fname}</span>"
             )
         return "<br>".join(lines)

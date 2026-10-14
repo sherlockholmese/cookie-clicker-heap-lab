@@ -1,5 +1,3 @@
-"""GUI-independent typed values, scans, watches, pointer labels, and diffs."""
-
 from __future__ import annotations
 
 import enum

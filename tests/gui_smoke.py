@@ -96,8 +96,21 @@ def main() -> None:
     mem._toggle_mode()
     assert len(mem.value_cells[0]) == 2
 
-    # function table lists all five functions
+    # Function table shows only in .text view and lists all five functions.
+    from cookie_clicker.memory import CODE, HEAP
+
+    mem.jump_to(CODE)
+    assert mem.fn_table.isVisible()
+    assert not mem.heap_scroll.isVisible()
     assert mem.fn_table.text().count("0x") == 5
+
+    # Heap view shows the scrollable struct list instead of the function table.
+    mem.jump_to(HEAP)
+    assert mem.heap_scroll.isVisible()
+    assert not mem.fn_table.isVisible()
+    # at least the Cookies, username-less structs: Cookies, User, Cursor
+    struct_entries = mem.heap_list_layout.count() - 1  # minus the trailing stretch
+    assert struct_entries >= 2
 
     # Win state swaps the surface to the win label.
     from cookie_clicker.game import G_WON, GLOBALS as G

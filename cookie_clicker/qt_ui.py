@@ -1,10 +1,3 @@
-"""Cross-platform PyQt6 main menu for the Cookie Clicker pwn workshop.
-
-Only the main game surface lives here. The draggable hexdump / memory view is
-intentionally left out for now (it will be added as a separate Qt window). The
-game logic in :mod:`cookie_clicker.game` is UI-agnostic and unchanged.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -35,12 +28,8 @@ from .game import (
 from .memory import HEAP, MemoryFault
 from .resources import text
 
-# Fixed cadence: the passive production in Machine counts TICKS_PER_SECOND (20)
-# ticks per cookie-second, so a 50 ms timer keeps real time.
 TICK_INTERVAL_MS = 50
 
-# Diagnostic / layout styling. Colors mirror the human-authored prototype in
-# layout/boy.py; keep aesthetic values here so they are easy to retune.
 STYLE = """
 QWidget#root { background: white; }
 QLineEdit, QPushButton#box, QLabel#box {
@@ -138,7 +127,7 @@ class MainWindow(QWidget):
         self.setObjectName("root")
         self.setWindowTitle(text("app.title"))
         self.setStyleSheet(STYLE)
-        self.resize(560, 560)
+        self.setFixedSize(560, 560)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
@@ -209,6 +198,7 @@ class MainWindow(QWidget):
         for btn in (self.debug_btn, self.pointer_btn):
             btn.setObjectName("box")
             btn.setMinimumHeight(54)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             row.addWidget(btn)
         self.pointer_btn.setCheckable(True)
         # The hexdump / memory view is added later; for now this is a hook.
@@ -218,7 +208,6 @@ class MainWindow(QWidget):
         col.addStretch()
         return col
 
-    # ---------- right column ----------
     def _build_right(self) -> QVBoxLayout:
         col = QVBoxLayout()
         col.setSpacing(14)
@@ -230,6 +219,7 @@ class MainWindow(QWidget):
         for btn in (self.buy_cursor_btn, self.buy_flag_btn):
             btn.setObjectName("box")
             btn.setMinimumHeight(44)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             col.addWidget(btn)
 
         self.objects = QScrollArea()
@@ -240,7 +230,6 @@ class MainWindow(QWidget):
         inner = QWidget()
         inner.setObjectName("objectsInner")
         self.objects_layout = QVBoxLayout(inner)
-        self.objects_layout.setContentsMargins(10, 8, 10, 8)
         self.objects_layout.setSpacing(0)
 
         self.objects_header = QLabel(text("game.cursors"))
@@ -262,7 +251,6 @@ class MainWindow(QWidget):
 
         col.addStretch()
 
-        # Win screen overlay content, shown in place of the normal surface.
         self.win_label = QLabel(text("game.win.title"))
         self.win_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.win_label.setFont(QFont("Courier New", 22, QFont.Weight.Bold))
@@ -314,11 +302,9 @@ class MainWindow(QWidget):
         if self.memory_window is None:
             self.memory_window = MemoryWindow(self.machine, on_change=self.refresh)
         else:
-            # Point the window at the current machine (segfault reverts swap it).
             self.memory_window.machine = self.machine
         self.memory_window.open_at(HEAP)
 
-    # ---------- cursors list ----------
     def _rebuild_cursor_rows(self, view: GameView) -> None:
         for widget in self.cursor_rows:
             self._pointer_info.pop(widget, None)
@@ -371,7 +357,6 @@ class MainWindow(QWidget):
         if ok:
             self.execute(lambda: self.machine.describe_cursor(index, parse_field(description)))
 
-    # ---------- pointer view ----------
     def _register_pointer(
         self, widget: QWidget, provider: Callable[[], tuple[str, str, int]]
     ) -> None:
@@ -386,7 +371,7 @@ class MainWindow(QWidget):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj in self._pointer_info:
             if event.type() == QEvent.Type.Enter and self.pointer_btn.isChecked():
-                self.show_tip(obj)  # type: ignore[arg-type]
+                self.show_tip(obj)
             elif event.type() == QEvent.Type.Leave:
                 self.tip.hide()
         return super().eventFilter(obj, event)
@@ -406,7 +391,6 @@ class MainWindow(QWidget):
         self.tip.raise_()
         self.tip.show()
 
-    # ---------- refresh / tick ----------
     def _tick(self) -> None:
         try:
             self.machine.advance_tick()
@@ -425,7 +409,6 @@ class MainWindow(QWidget):
         self.win_label.hide()
         self._set_game_visible(True)
 
-        # Username textbox: only overwrite when not actively editing.
         if not self.name_edit.hasFocus() and self.name_edit.text() != view.username:
             self.name_edit.setText(view.username)
 
@@ -444,7 +427,6 @@ class MainWindow(QWidget):
             self._update_cursor_rows(view)
             self._cursor_signature = signature
 
-        # Keep an open memory window live with the game (shared machine).
         if self.memory_window is not None and self.memory_window.isVisible():
             self.memory_window.machine = self.machine
             self.memory_window.refresh()
@@ -465,8 +447,6 @@ class MainWindow(QWidget):
 
 
 class CookieApp:
-    """Thin launcher that owns the QApplication and the main window."""
-
     def __init__(self, machine: Machine) -> None:
         self._owns_app = QApplication.instance() is None
         self.app = QApplication.instance() or QApplication(sys.argv)

@@ -140,7 +140,7 @@ class Heap:
         self.allocations: list[Allocation] = []
         self.free_list: list[FreeBlock] = [FreeBlock(base, size)]
 
-    def allocate(self, size: int, semantic_type: str, alignment: int = 8) -> int:
+    def allocate(self, size: int, semantic_type: str, alignment: int = 0x20) -> int:
         if size <= 0 or alignment <= 0 or alignment & (alignment - 1):
             raise ValueError("invalid allocation size or alignment")
         if len(self.allocations) >= 65536 or self.next_id > MASK64:

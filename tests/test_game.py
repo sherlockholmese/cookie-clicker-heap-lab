@@ -36,9 +36,10 @@ class GameTests(unittest.TestCase):
         view = machine.view()
         self.assertEqual(HEAP, 0x0552_00000)
         self.assertEqual(view.cookies, 0)
+        # Allocations are 0x20-aligned, in order: username, Cookies, User.
         self.assertEqual(view.username_ptr, HEAP)
-        self.assertEqual(view.cookies_ptr, HEAP + 32)
-        self.assertEqual(view.user_ptr, HEAP + 40)
+        self.assertEqual(view.cookies_ptr, HEAP + 0x20)
+        self.assertEqual(view.user_ptr, HEAP + 0x40)
         self.assertEqual(machine.memory.read_u64(view.user_ptr + USER_ID), 1)
         self.assertEqual(machine.memory.read_u64(view.user_ptr + USER_USERNAME), HEAP)
         self.assertEqual(machine.memory.read_u64(GLOBALS + G_CURSORS), GLOBALS + 0x100)
@@ -77,7 +78,9 @@ class GameTests(unittest.TestCase):
 
     def test_username_overflow_reaches_cookies(self) -> None:
         machine = Machine(1)
-        machine.rename_user(b"A" * 32 + FLAG_PRICE.to_bytes(8, "little"))
+        # Username buffer is 0x20-aligned (32 bytes); Cookies follows at +0x20.
+        # Filling the buffer and writing 8 more bytes overflows into cookies.
+        machine.rename_user(b"A" * 0x20 + FLAG_PRICE.to_bytes(8, "little"))
         self.assertEqual(machine.view().cookies, FLAG_PRICE)
 
     def test_rename_preserves_username_pointer(self) -> None:

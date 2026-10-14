@@ -132,14 +132,12 @@ class MainWindow(QWidget):
             btn.setObjectName("box")
             btn.setMinimumHeight(54)
             row.addWidget(btn)
-        # only the pointer view button is a toggle in this view
         self.pointer_btn.setCheckable(True)
         col.addLayout(row)
 
         col.addStretch()
         return col
 
-    # ---------- right column ----------
     def _build_right(self) -> QVBoxLayout:
         col = QVBoxLayout()
         col.setSpacing(14)

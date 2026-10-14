@@ -1,5 +1,3 @@
-"""Cookie game whose authoritative state lives in virtual memory."""
-
 from __future__ import annotations
 
 import copy
@@ -9,7 +7,7 @@ from .memory import CODE, GLOBALS, HEAP, HEAP_SIZE, MASK64, Allocation, Heap, Me
 from .resources import text
 
 TICKS_PER_SECOND = 20
-FLAG_PRICE = 1_000_000_000_000
+FLAG_PRICE = 1_000_000
 CURSOR_PRICE = 10
 MAX_CURSORS = 32
 
@@ -40,9 +38,6 @@ FN_DELETE_CURSOR = CODE + 0x280
 FN_MODIFY_CURSOR = CODE + 0x300
 FUNCTION_TABLE = GLOBALS + 0x300
 
-# (name key, entry address) pairs rendered in the live function table. The
-# auxiliary cursor helpers are deliberate no-ops: they exist so the .text
-# section and function table look like a real program with several routines.
 FUNCTIONS: tuple[tuple[str, int], ...] = (
     ("functions.add_cookie", FN_ADD_COOKIE),
     ("functions.win", FN_WIN),
@@ -51,27 +46,11 @@ FUNCTIONS: tuple[tuple[str, int], ...] = (
     ("functions.modify_cursor", FN_MODIFY_CURSOR),
 )
 
-# Function entry points that merely add a cookie / do nothing when a Cursor's
-# on_clicked pointer happens to reference them. Keeping them inert means the
-# teaching heap stays deterministic no matter which helper is wired up.
 _NOOP_FUNCTIONS = frozenset({FN_ADD_CURSOR, FN_DELETE_CURSOR, FN_MODIFY_CURSOR})
 
 
 def _fake_bytecode(entry: int, size: int) -> bytes:
-    """Generate deterministic, plausible-looking x86-64 bytecode for a slot.
-
-    This is *not* a faithful assembler. The goal (per spec.md) is for .text to
-    contain likely-looking machine code rather than human-readable labels, so
-    hovering shows real-looking opcodes while the function table and tooltips
-    supply the friendly names. Output is fully determined by ``entry`` so saves
-    and tests stay reproducible.
-    """
-
-    # push rbp; mov rbp, rsp; sub rsp, 0x10  (a standard function prologue)
     body = bytearray(b"\x55\x48\x89\xe5\x48\x83\xec\x10")
-    # A short, repeatable instruction menu keyed off the entry address so each
-    # function has a distinct-but-stable body. Each entry pairs an opcode with
-    # the number of pseudo-random operand bytes that follow it.
     snippets: tuple[tuple[bytes, int], ...] = (
         (b"\x48\x8b\x05", 4),  # mov rax, [rip+disp32]
         (b"\x48\x83\xc0\x01", 0),  # add rax, 1
