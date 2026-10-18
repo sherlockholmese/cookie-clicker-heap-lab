@@ -28,8 +28,6 @@ CURSOR_NAME = 8
 CURSOR_DESCRIPTION = 16
 CURSOR_ON_CLICKED = 24
 
-# Each function occupies a fixed-size slot in .text and is filled with
-# deterministic, realistic-looking (but non-executed) x86-64-style bytecode.
 FN_SLOT_SIZE = 0x40
 FN_ADD_COOKIE = CODE + 0x100
 FN_WIN = CODE + 0x180
@@ -52,16 +50,16 @@ _NOOP_FUNCTIONS = frozenset({FN_ADD_CURSOR, FN_DELETE_CURSOR, FN_MODIFY_CURSOR})
 def _fake_bytecode(entry: int, size: int) -> bytes:
     body = bytearray(b"\x55\x48\x89\xe5\x48\x83\xec\x10")
     snippets: tuple[tuple[bytes, int], ...] = (
-        (b"\x48\x8b\x05", 4),  # mov rax, [rip+disp32]
-        (b"\x48\x83\xc0\x01", 0),  # add rax, 1
-        (b"\x48\x89\x05", 4),  # mov [rip+disp32], rax
-        (b"\x48\x8d\x3d", 4),  # lea rdi, [rip+disp32]
-        (b"\xe8", 4),  # call rel32
-        (b"\x31\xc0", 0),  # xor eax, eax
-        (b"\x48\x85\xc0", 0),  # test rax, rax
-        (b"\x74", 1),  # jz rel8
-        (b"\x48\x89\xc7", 0),  # mov rdi, rax
-        (b"\x90", 0),  # nop
+        (b"\x48\x8b\x05", 4),
+        (b"\x48\x83\xc0\x01", 0),
+        (b"\x48\x89\x05", 4),
+        (b"\x48\x8d\x3d", 4),
+        (b"\xe8", 4),
+        (b"\x31\xc0", 0),
+        (b"\x48\x85\xc0", 0),
+        (b"\x74", 1),
+        (b"\x48\x89\xc7", 0),
+        (b"\x90", 0),
     )
     state = (entry >> 4) & 0xFF
     while len(body) < size - 2:
@@ -73,7 +71,6 @@ def _fake_bytecode(entry: int, size: int) -> bytes:
             state = (state * 1103515245 + 12345) & 0xFF
             body.append(state)
         state = (state + len(body) * 7 + 1) & 0xFF
-    # pop rbp; ret  (standard epilogue) then pad with int3 breakpoints.
     body = body[: size - 2] + bytearray(b"\x5d\xc3")
     body += b"\xcc" * (size - len(body))
     return bytes(body[:size])
@@ -97,6 +94,8 @@ class CursorView:
     description: str
     description_ptr: int
     on_clicked: int
+    name_bytes: bytes
+    description_bytes: bytes
 
 
 @dataclass(frozen=True)
@@ -186,12 +185,15 @@ class Machine:
     def cursor_table_address() -> int:
         return GLOBALS + G_CURSOR_TABLE
 
-    def _read_string(self, address: int, maximum: int) -> str:
+    def _read_raw(self, address: int, maximum: int) -> bytes:
         try:
             raw = self.memory.read(address, maximum)
         except MemoryFault as error:
             raise SegmentationFault(error.address) from error
-        return raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+        return raw.split(b"\0", 1)[0]
+
+    def _read_string(self, address: int, maximum: int) -> str:
+        return self._read_raw(address, maximum).decode("utf-8", errors="replace")
 
     def cursor_address(self, index: int) -> int:
         count = self._read_u64(GLOBALS + G_CURSOR_COUNT)
@@ -208,14 +210,18 @@ class Machine:
         for index in range(count):
             address = self._read_u64(self.cursor_table_address() + index * 8)
             description_ptr = self._read_u64(address + CURSOR_DESCRIPTION)
+            name_bytes = self._read_raw(address + CURSOR_NAME, 8)
+            description_bytes = self._read_raw(description_ptr, 128)
             cursors.append(
                 CursorView(
                     address=address,
                     id=self._read_u64(address + CURSOR_ID),
-                    name=self._read_string(address + CURSOR_NAME, 8),
-                    description=self._read_string(description_ptr, 128),
+                    name=name_bytes.decode("utf-8", errors="replace"),
+                    description=description_bytes.decode("utf-8", errors="replace"),
                     description_ptr=description_ptr,
                     on_clicked=self._read_u64(address + CURSOR_ON_CLICKED),
+                    name_bytes=name_bytes,
+                    description_bytes=description_bytes,
                 )
             )
         return GameView(
@@ -288,8 +294,6 @@ class Machine:
             elif function == FN_WIN:
                 self._write_u64(GLOBALS + G_WON, 1)
             elif function in _NOOP_FUNCTIONS:
-                # add_cursor / delete_cursor / modify_cursor are inert helpers:
-                # a valid .text entry point that intentionally does nothing.
                 pass
             else:
                 raise SegmentationFault(function)

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CODE = 0x0040_0000
-GLOBALS = 0x5510_0000
-HEAP = 0x5520_0000
+CODE = 0x0040_1000
+GLOBALS = 0x0040_4000
+HEAP = 0x5555_5555_5000
 HEAP_SIZE = 64 * 1024
 MASK64 = (1 << 64) - 1
 

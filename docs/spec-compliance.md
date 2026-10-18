@@ -45,7 +45,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 ## Virtual machine
 
 - All guest addresses are checked Python integers; none become native pointers.
-- The object heap begins exactly at `0x055200000`.
+- The object heap begins exactly at `0x555555555000`.
 - `.text` becomes read/execute-only after initialization; `.bss` and the heap remain writable.
 - `.text` contains deterministic, realistic-looking bytecode in fixed 0x40-byte slots for `add_cookie`, `win`, and the inert `add_cursor`, `delete_cursor`, and `modify_cursor` helpers; hover tooltips and the function table supply the names.
 - `.bss` contains Cookies, User, Cursor-array, count, input-limit, function-table, flag, and win globals.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import sys
 from typing import Callable
 
@@ -92,6 +93,13 @@ def parse_field(value: str) -> bytes:
     return bytes(output)
 
 
+def display_field(raw: bytes) -> str:
+    out = []
+    for byte in raw:
+        out.append(chr(byte) if 32 <= byte < 127 else f"\\x{byte:02x}")
+    return html.escape("".join(out))
+
+
 class PointerTip(QLabel):
     """Dark hover box: <italic type> <name> <red underlined address>."""
 
@@ -119,8 +127,7 @@ class MainWindow(QWidget):
         self.last_valid = machine.clone()
         self.status = ""
         self.pointer_view = pointer_mode
-        self.memory_window = None  # lazily created MemoryWindow
-        # widget -> callable returning (type, name, address) for pointer hover
+        self.memory_window = None
         self._pointer_info: dict[QWidget, Callable[[], tuple[str, str, int]]] = {}
         self._cursor_signature: tuple[tuple[object, ...], ...] | None = None
 
@@ -143,8 +150,6 @@ class MainWindow(QWidget):
 
         self.tip = PointerTip(self)
 
-        # Static pointer-info providers (dynamic ones per cursor are added in
-        # the objects-list rebuild).
         self._register_pointer(
             self.name_edit,
             lambda: (text("schema.char_pointer"), text("schema.username"), self.safe_view().username_ptr),
@@ -163,7 +168,6 @@ class MainWindow(QWidget):
 
         self.refresh()
 
-    # ---------- left column ----------
     def _build_left(self) -> QVBoxLayout:
         col = QVBoxLayout()
         col.setSpacing(14)
@@ -201,7 +205,6 @@ class MainWindow(QWidget):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             row.addWidget(btn)
         self.pointer_btn.setCheckable(True)
-        # The hexdump / memory view is added later; for now this is a hook.
         self.debug_btn.clicked.connect(self._open_debugger)
         col.addLayout(row)
 
@@ -258,7 +261,6 @@ class MainWindow(QWidget):
         col.addWidget(self.win_label)
         return col
 
-    # ---------- game actions ----------
     def safe_view(self) -> GameView:
         try:
             view = self.machine.view()
@@ -330,10 +332,10 @@ class MainWindow(QWidget):
 
     def _update_cursor_rows(self, view: GameView) -> None:
         for label, cursor in zip(self.cursor_rows, view.cursors, strict=True):
-            name = cursor.name or text("schema.cursor")
+            name = display_field(cursor.name_bytes) or text("schema.cursor")
             label.setText(
                 f"<b>{name} (id {cursor.id}):</b><br>"
-                f"<i>{cursor.description}</i><br>"
+                f"<i>{display_field(cursor.description_bytes)}</i><br>"
             )
 
     def edit_cursor(self, index: int) -> None:
@@ -419,7 +421,8 @@ class MainWindow(QWidget):
         self.buy_flag_btn.setEnabled(view.cookies >= FLAG_PRICE and not view.flag_owned)
 
         signature = tuple(
-            (cursor.address, cursor.id, cursor.name, cursor.description) for cursor in view.cursors
+            (cursor.address, cursor.id, cursor.name_bytes, cursor.description_bytes)
+            for cursor in view.cursors
         )
         if signature != self._cursor_signature:
             if len(view.cursors) != len(self.cursor_rows):

@@ -34,7 +34,7 @@ class GameTests(unittest.TestCase):
     def test_fresh_layout_and_code_contract(self) -> None:
         machine = Machine(1)
         view = machine.view()
-        self.assertEqual(HEAP, 0x0552_00000)
+        self.assertEqual(HEAP, 0x5555_5555_5000)
         self.assertEqual(view.cookies, 0)
         # Allocations are 0x20-aligned, in order: username, Cookies, User.
         self.assertEqual(view.username_ptr, HEAP)
