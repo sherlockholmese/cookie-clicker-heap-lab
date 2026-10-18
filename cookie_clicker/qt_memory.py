@@ -60,12 +60,12 @@ TOOLTIP_LABEL = "#333333"
 WINDOW_STYLE = """
 QWidget#memroot { background: white; }
 QPushButton#section, QPushButton#mode {
-    background: #efefef; border: 1px solid #595959; color: black; padding: 5px 10px;
+    background: #efefef; border: 1px solid #7a7a7a; color: black; padding: 5px 10px;
 }
 QPushButton#section:checked, QPushButton#mode:checked { background: #d7d7d7; font-weight: bold; }
-QLabel#title { background: #efefef; border: 1px solid #595959; padding: 5px; }
+QLabel#title { background: #efefef; border: 1px solid #7a7a7a; padding: 5px; }
 QLabel#tooltip { background: #bcbcbc; padding: 10px 16px;}
-QLineEdit#jump { background: #efefef; border: 1px solid #595959; padding: 3px; }
+QLineEdit#jump { background: #efefef; border: 1px solid #7a7a7a; padding: 3px; }
 """
 
 
@@ -186,6 +186,8 @@ class MemoryWindow(QWidget):
         left.addWidget(title)
 
         self.grid_host = QWidget()
+        self.grid_host.setMouseTracking(True)
+        self.grid_host.installEventFilter(self)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(2, 2, 2, 2)
         self.grid.setHorizontalSpacing(10)
@@ -193,7 +195,7 @@ class MemoryWindow(QWidget):
         left.addWidget(self.grid_host)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color: #595959;")
+        self.status.setStyleSheet("color: #7a7a7a;")
         left.addWidget(self.status)
         left.addStretch()
 
@@ -286,6 +288,8 @@ class MemoryWindow(QWidget):
                 grid_col = 2 + col + (1 if (not self.qwords and col >= 8) else 0)
                 self.grid.addWidget(cell, row, grid_col)
                 cells.append(cell)
+            if not self.qwords:
+                self.grid.addWidget(self._sep(), row, 10)
             self.value_cells.append(cells)
             sep_col = 2 + count + (1 if not self.qwords else 0)
             self.grid.addWidget(self._sep(), row, sep_col)
@@ -294,12 +298,21 @@ class MemoryWindow(QWidget):
             ascii_label.setFixedWidth(ascii_w)
             self.grid.addWidget(ascii_label, row, sep_col + 1)
             self.ascii_cells.append(ascii_label)
-        sep_w = metrics.horizontalAdvance("0") + 10
-        gap = metrics.horizontalAdvance("0") if not self.qwords else 0
-        dump_w = addr_w + sep_w + count * cell_w + gap + sep_w + ascii_w + 24
-        self.grid_host.setFixedWidth(dump_w)
         self.grid_host.setFixedHeight(metrics.height() * (ROW_COUNT + 1) + 10)
         self.grid.setRowStretch(ROW_COUNT, 1)
+        bar_w = self._sep().sizeHint().width()
+        bars = 2 if self.qwords else 3
+        columns = 2 + bars + count
+        margins = self.grid.contentsMargins().left() + self.grid.contentsMargins().right()
+        grid_width = (
+            addr_w
+            + bars * bar_w
+            + count * cell_w
+            + ascii_w
+            + (columns - 1) * self.grid.horizontalSpacing()
+            + margins
+        )
+        self.grid_host.setFixedWidth(grid_width)
         old_box = getattr(self, "struct_box", None)
         if old_box is not None:
             old_box.setParent(None)
@@ -310,11 +323,8 @@ class MemoryWindow(QWidget):
         )
         self.struct_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.struct_box.hide()
-        byte_cell_w = metrics.horizontalAdvance("00") + 10
-        byte_dump_w = addr_w + sep_w + 16 * byte_cell_w + metrics.horizontalAdvance("0") + sep_w + ascii_w + 24
-        window_w = byte_dump_w + 300
-        window_h = metrics.height() * (ROW_COUNT + 1) + 150
-        self.setFixedSize(window_w, window_h)
+        self.layout().activate()
+        self.setFixedSize(self.sizeHint())
 
     def _mono_metrics(self):
         from PyQt6.QtGui import QFontMetrics
@@ -372,7 +382,7 @@ class MemoryWindow(QWidget):
         self._sync_jump_text()
         self.refresh()
 
-    def wheelEvent(self, event) -> None:  # type: ignore[override]
+    def wheelEvent(self, event) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self._zoom(1 if event.angleDelta().y() > 0 else -1)
             return
@@ -447,11 +457,6 @@ class MemoryWindow(QWidget):
         return self._field_kind(address) in ("ptr:function", "ptr:char", "ptr:struct")
 
     def _field_kind(self, address: int) -> str | None:
-        """Classify the field a byte/qword belongs to, by semantic type.
-
-        Returns one of: int, char, bytecode, ptr:function, ptr:char,
-        ptr:struct, or None for unclassified bytes.
-        """
         slot = self.function_slot(address)
         if slot is not None:
             return "ptr:function" if address < slot[1] + 8 else "bytecode"
@@ -510,7 +515,6 @@ class MemoryWindow(QWidget):
         }.get(kind, COLOR_PLAIN)
 
     def _byte_color(self, address: int) -> str:
-        """Foreground color for a byte/qword cell, by field type."""
         return self._kind_color(self._field_kind(address))
 
     def _row_base(self, row: int) -> int:
@@ -602,8 +606,6 @@ class MemoryWindow(QWidget):
         self._update_struct_overlay()
 
     def _address_span_rect(self, start: int, size: int):
-        """Union rectangle (in grid_host coordinates) of every visible cell that
-        overlaps [start, start + size), or None if none are on screen."""
         end = start + size
         width = 8 if self.qwords else 1
         rect = None
@@ -729,7 +731,45 @@ class MemoryWindow(QWidget):
                 self._follow_selected()
             elif etype == QEvent.Type.MouseButtonPress:
                 self._click(self._cell_address(row, col))
+        elif obj is getattr(self, "grid_host", None):
+            etype = event.type()
+            if etype == QEvent.Type.MouseMove:
+                address = self._address_at_pos(event.position().toPoint())
+                if address is None:
+                    self._hover_clear.start()
+                else:
+                    self._hover_clear.stop()
+                    self._hover(address)
+            elif etype == QEvent.Type.Leave:
+                self._hover_clear.start()
         return super().eventFilter(obj, event)
+
+    def _address_at_pos(self, pos) -> int | None:
+        if not self.value_cells:
+            return None
+        row = 0
+        best_dy: int | None = None
+        for r in range(ROW_COUNT):
+            cell = self.value_cells[r][0]
+            top = cell.mapTo(self.grid_host, cell.rect().topLeft()).y()
+            dy = max(top - pos.y(), 0, pos.y() - (top + cell.height()))
+            if best_dy is None or dy < best_dy:
+                best_dy = dy
+                row = r
+        cells = self.value_cells[row]
+        left = cells[0].mapTo(self.grid_host, cells[0].rect().topLeft()).x()
+        right = cells[-1].mapTo(self.grid_host, cells[-1].rect().topRight()).x()
+        if pos.x() < left or pos.x() > right:
+            return None
+        best_col = 0
+        best_dx: int | None = None
+        for col, cell in enumerate(cells):
+            cl = cell.mapTo(self.grid_host, cell.rect().topLeft()).x()
+            dx = max(cl - pos.x(), 0, pos.x() - (cl + cell.width()))
+            if best_dx is None or dx < best_dx:
+                best_dx = dx
+                best_col = col
+        return self._cell_address(row, best_col)
 
     def _clear_hover(self) -> None:
         if self.struct_outline is None and self.bold_range is None:

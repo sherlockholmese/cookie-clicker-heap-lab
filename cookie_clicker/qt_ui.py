@@ -49,12 +49,12 @@ QScrollArea#objects { background: white; border: 1px solid black; }
 QWidget#objectsInner { background: white; }
 """
 
-LIST_TEXT_STYLE = "color: #595959; font-size: 14px;"
+LIST_TEXT_STYLE = "color: #7a7a7a; font-size: 14px;"
 
 COOKIE_BUTTON_STYLE = """
 QPushButton {
     background: #ffab40;
-    border: 1px solid #595959;
+    border: 1px solid #7a7a7a;
     border-radius: 36px;
     color: #333;
 }
