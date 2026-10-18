@@ -64,8 +64,6 @@ class ValueType(enum.Enum):
         self.category = category
 
     def interpret(self, data: bytes) -> str:
-        if len(data) < self.width:
-            raise ValueError("not enough readable bytes")
         value = data[: self.width]
         if self.category == "unsigned":
             return str(int.from_bytes(value, "little"))

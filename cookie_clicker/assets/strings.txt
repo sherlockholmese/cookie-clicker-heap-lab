@@ -2,7 +2,7 @@
 app.title=Cookie Clicker Pwn Workshop
 default.username=student
 default.cursor.name=Cursor
-default.cursor.description=Produces one cookie per second.
+default.cursor.description=Bakes a cookie every 5 seconds.
 game.user=User:
 game.username.change=Change username
 game.username.placeholder=your name: (editable)

@@ -5,7 +5,7 @@ This checklist maps `spec.md` to the pure-Python implementation. It is instructo
 ## Game
 
 - The game starts at zero; the cookie adds one per click.
-- A Cursor costs 10 and every owned Cursor produces one cookie per second.
+- A Cursor costs 10 and every owned Cursor produces one cookie every five seconds.
 - Every automatic Cursor activation dispatches that Cursor's live `on_clicked` pointer.
 - The trillion-cookie flag and `win()` are separate goals and separate guest fields.
 - `win()` switches the main surface to a dedicated ending screen.

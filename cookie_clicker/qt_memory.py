@@ -60,12 +60,12 @@ TOOLTIP_LABEL = "#333333"
 WINDOW_STYLE = """
 QWidget#memroot { background: white; }
 QPushButton#section, QPushButton#mode {
-    background: #efefef; border: 1px solid #7a7a7a; color: black; padding: 5px 10px;
+    background: #efefef; border: 1px solid #5a5a5a; color: black; padding: 5px 10px;
 }
 QPushButton#section:checked, QPushButton#mode:checked { background: #d7d7d7; font-weight: bold; }
-QLabel#title { background: #efefef; border: 1px solid #7a7a7a; padding: 5px; }
+QLabel#title { background: #efefef; border: 1px solid #5a5a5a; padding: 5px; }
 QLabel#tooltip { background: #bcbcbc; padding: 10px 16px;}
-QLineEdit#jump { background: #efefef; border: 1px solid #7a7a7a; padding: 3px; }
+QLineEdit#jump { background: #efefef; border: 1px solid #5a5a5a; padding: 3px; }
 """
 
 
@@ -190,12 +190,12 @@ class MemoryWindow(QWidget):
         self.grid_host.installEventFilter(self)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(2, 2, 2, 2)
-        self.grid.setHorizontalSpacing(10)
+        self.grid.setHorizontalSpacing(1)
         self.grid.setVerticalSpacing(1)
         left.addWidget(self.grid_host)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color: #7a7a7a;")
+        self.status.setStyleSheet("color: #5a5a5a;")
         left.addWidget(self.status)
         left.addStretch()
 
@@ -212,7 +212,7 @@ class MemoryWindow(QWidget):
         self.tooltip.setFont(QFont("Courier New", 12))
         self.tooltip.setWordWrap(True)
         self.tooltip.setFixedWidth(230)
-        self.tooltip.setMinimumHeight(110)
+        self.tooltip.setFixedHeight(210)
         self.tooltip.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         right.addWidget(self.tooltip)
 
@@ -237,8 +237,8 @@ class MemoryWindow(QWidget):
         self.heap_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.heap_list_inner = QWidget()
         self.heap_list_layout = QVBoxLayout(self.heap_list_inner)
-        self.heap_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.heap_list_layout.setSpacing(2)
+        self.heap_list_layout.setContentsMargins(16, 10, 16, 10)
+        self.heap_list_layout.setSpacing(8)
         self.heap_list_layout.addStretch()
         self.heap_scroll.setWidget(self.heap_list_inner)
         right.addWidget(self.heap_scroll)
@@ -675,7 +675,7 @@ class MemoryWindow(QWidget):
             "struct Cursor": text("schema.object.cursor"),
         }
         structs = [
-            (struct_names[alloc.semantic_type], alloc.base)
+            (struct_names[alloc.semantic_type], alloc.base, alloc.size)
             for alloc in self.machine.allocations
             if getattr(alloc, "live", True) and alloc.semantic_type in struct_names
         ]
@@ -689,7 +689,7 @@ class MemoryWindow(QWidget):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        for name, base in structs:
+        for name, base, size in structs:
             entry = QLabel(
                 f"<span style='color:{COLOR_PLAIN}'>{name}</span><br>"
                 f"<span style='color:{COLOR_STRUCT_PTR}'><u>0x{base:012X}</u></span>"
@@ -698,8 +698,21 @@ class MemoryWindow(QWidget):
             entry.setTextFormat(Qt.TextFormat.RichText)
             entry.setCursor(Qt.CursorShape.PointingHandCursor)
             entry.mousePressEvent = lambda _e, a=base: self.jump_to(a)  # type: ignore[assignment]
+            entry.enterEvent = lambda _e, b=base, s=size: self._hover_struct(b, s)  # type: ignore[assignment]
+            entry.leaveEvent = lambda _e: self._hover_clear.start()  # type: ignore[assignment]
             self.heap_list_layout.addWidget(entry)
         self.heap_list_layout.addStretch()
+
+    def _hover_struct(self, base: int, size: int) -> None:
+        self._hover_clear.stop()
+        allocation = self.struct_at(base)
+        if allocation is not None:
+            self.tooltip.setText(self._struct_tooltip(allocation))
+        if self.struct_outline == (base, size) and self.bold_range is None:
+            return
+        self.struct_outline = (base, size)
+        self.bold_range = None
+        self._restyle_cells()
 
     def _flash(self, address: int) -> None:
         self.flashing.add(address)
@@ -865,7 +878,8 @@ class MemoryWindow(QWidget):
                     raw = self.machine.read_memory(region[0], min(16, region[1]))
                 except MemoryFault:
                     raw = b""
-                preview = "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
+                preview = "".join(chr(b) if 32 <= b < 127 else "?" for b in raw[:0x08])
+                if len(raw) > 0x08: preview += "..."
                 return (
                     f"<span style='color:{TOOLTIP_LABEL}'>{text('schema.char_pointer')} "
                     f"{text('schema.address')} </span>"

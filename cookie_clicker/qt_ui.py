@@ -49,12 +49,12 @@ QScrollArea#objects { background: white; border: 1px solid black; }
 QWidget#objectsInner { background: white; }
 """
 
-LIST_TEXT_STYLE = "color: #7a7a7a; font-size: 14px;"
+LIST_TEXT_STYLE = "color: #5a5a5a; font-size: 14px;"
 
 COOKIE_BUTTON_STYLE = """
 QPushButton {
     background: #ffab40;
-    border: 1px solid #7a7a7a;
+    border: 1px solid #5a5a5a;
     border-radius: 36px;
     color: #333;
 }
@@ -63,8 +63,6 @@ QPushButton:pressed { background: #f09a2c; }
 
 
 def parse_address(value: str) -> int:
-    """Parse a hexadecimal (0x…) or decimal guest address."""
-
     candidate = value.strip().replace("_", "")
     try:
         return int(candidate, 16 if candidate.lower().startswith("0x") else 10)
@@ -73,8 +71,6 @@ def parse_address(value: str) -> int:
 
 
 def parse_field(value: str) -> bytes:
-    r"""Convert a text field (mixing UTF-8 and ``\xNN`` escapes) to raw bytes."""
-
     output = bytearray()
     index = 0
     while index < len(value):
@@ -101,8 +97,6 @@ def display_field(raw: bytes) -> str:
 
 
 class PointerTip(QLabel):
-    """Dark hover box: <italic type> <name> <red underlined address>."""
-
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

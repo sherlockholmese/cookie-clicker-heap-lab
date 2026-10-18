@@ -113,8 +113,7 @@ class GameView:
 
 
 class Machine:
-    def __init__(self, seed: int = 0) -> None:
-        self.seed = seed & MASK64
+    def __init__(self) -> None:
         self.tick = 0
         self.passive_remainder = 0
         self.paused = False
@@ -307,10 +306,7 @@ class Machine:
             return
         self.tick += 1
         self.passive_remainder += 1
-        elapsed_seconds, self.passive_remainder = divmod(
-            self.passive_remainder, TICKS_PER_SECOND
-        )
-        for _ in range(elapsed_seconds):
+        if self.tick % (TICKS_PER_SECOND * 5) == 0:
             cursor_count = min(self._read_u64(GLOBALS + G_CURSOR_COUNT), MAX_CURSORS)
             for index in range(cursor_count):
                 self.invoke_cursor(index)
@@ -342,7 +338,6 @@ class Machine:
 
     def export(self) -> dict[str, object]:
         return {
-            "seed": self.seed,
             "tick": self.tick,
             "passive_remainder": self.passive_remainder,
             "paused": self.paused,
@@ -353,7 +348,6 @@ class Machine:
     @classmethod
     def restore(cls, state: dict[str, object]) -> "Machine":
         machine = cls.__new__(cls)
-        machine.seed = int(state["seed"])
         machine.tick = int(state["tick"])
         machine.passive_remainder = int(state["passive_remainder"])
         machine.paused = bool(state["paused"])
