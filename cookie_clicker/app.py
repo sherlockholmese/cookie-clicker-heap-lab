@@ -1,5 +1,3 @@
-"""Command-line entry point."""
-
 from __future__ import annotations
 
 import argparse
@@ -7,7 +5,6 @@ import secrets
 import sys
 
 from .game import Machine
-from .save_state import load
 from .qt_ui import CookieApp
 
 

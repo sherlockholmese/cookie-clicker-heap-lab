@@ -9,6 +9,10 @@ def _resource(name: str) -> str:
     return files("cookie_clicker.assets").joinpath(name).read_text(encoding="utf-8")
 
 
+def asset_path(name: str) -> str:
+    return str(files("cookie_clicker.assets").joinpath(name))
+
+
 def _load_copy() -> dict[str, str]:
     result: dict[str, str] = {}
     for raw in _resource("strings.txt").splitlines():

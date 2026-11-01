@@ -5,9 +5,10 @@ import sys
 from typing import Callable
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QFontDatabase
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .game import (
+    CURSOR_NAME,
     CURSOR_PRICE,
     FLAG_PRICE,
     GameError,
@@ -27,36 +29,64 @@ from .game import (
     SegmentationFault,
 )
 from .memory import HEAP, MemoryFault
-from .resources import text
+from .qt_dialogs import GRAY_THEME, FormDialog
+from .resources import asset_path, text
+
+UI_FONT_FAMILY = "Schibsted Grotesk"
+UI_FONT_FILES = (
+    "static/SchibstedGrotesk-Regular.ttf",
+    "static/SchibstedGrotesk-Bold.ttf",
+    "static/SchibstedGrotesk-Italic.ttf",
+    "static/SchibstedGrotesk-BoldItalic.ttf",
+)
 
 TICK_INTERVAL_MS = 50
 
+MONO_FAMILY = "Courier New"
+
 STYLE = """
 QWidget#root { background: white; }
-QLineEdit, QPushButton#box, QLabel#box {
-    background: #efefef;
-    border: 1px solid #595959;
-    color: black;
-    font-size: 16px;
+QFrame#username { background: #595959; border: 1px solid #333333; }
+QFrame#username QLabel, QFrame#username QLineEdit {
+    background: transparent; border: none; color: white;
 }
-QLineEdit { padding: 4px; }
-QPushButton#box { padding: 6px; }
-QPushButton#box:checked { background: #ffd9a0; }
-QPushButton#box:disabled { color: #a0a0a0; }
-QLabel#box { padding: 4px; }
+QLabel#count {
+    background: #ffab40; border: 1px solid #5a5a5a; color: #333333;
+    font-weight: bold; padding: 6px;
+}
+QPushButton#debug {
+    background: #eeeeee; border: 1px solid #595959; color: #333333; padding: 8px;
+}
+QPushButton#debug:checked { background: #ffd9a0; }
+QPushButton#debug:disabled { color: #a0a0a0; }
+QPushButton#buycursor {
+    background: #c9daf8; border: 1px solid #1155cc; color: #1155cc;
+    font-size: 16px; padding: 8px;
+}
+QPushButton#buycursor:disabled { background: #eef3fd; border-color: #9bb7e8; color: #9bb7e8; }
+QPushButton#buyflag {
+    background: #d9ead3; border: 1px solid #274e13; color: #274e13;
+    font-size: 16px; padding: 8px;
+}
+QPushButton#buyflag:disabled { background: #eef5ea; border-color: #9cbf8a; color: #9cbf8a; }
 QFrame#divider { background: #595959; }
-QScrollArea#objects { background: white; border: 1px solid black; }
+QScrollArea#objects { background: white; border: none; }
 QWidget#objectsInner { background: white; }
 """
 
-LIST_TEXT_STYLE = "color: #5a5a5a; font-size: 14px;"
+LIST_TEXT_STYLE = "color: #333333; font-size: 14px;"
+
+CARD_STYLE = (
+    "background: #c9daf8; border: 1px solid #1155cc; border-radius: 6px;"
+    " padding: 8px; color: #1155cc; font-size: 14px;"
+)
 
 COOKIE_BUTTON_STYLE = """
 QPushButton {
     background: #ffab40;
     border: 1px solid #5a5a5a;
     border-radius: 36px;
-    color: #333;
+    color: #783f04;
 }
 QPushButton:pressed { background: #f09a2c; }
 """
@@ -94,6 +124,14 @@ def display_field(raw: bytes) -> str:
     for byte in raw:
         out.append(chr(byte) if 32 <= byte < 127 else f"\\x{byte:02x}")
     return html.escape("".join(out))
+
+
+def price_label(amount: int) -> str:
+    if amount >= 1_000_000 and amount % 1_000_000 == 0:
+        return f"{amount // 1_000_000} mil"
+    if amount >= 1_000 and amount % 1_000 == 0:
+        return f"{amount // 1_000}k"
+    return str(amount)
 
 
 class PointerTip(QLabel):
@@ -168,41 +206,61 @@ class MainWindow(QWidget):
         center = Qt.AlignmentFlag.AlignHCenter
 
         self.name_edit = QLineEdit()
+        self.name_edit.setFont(QFont(MONO_FAMILY, 13))
         self.name_edit.setPlaceholderText(text("game.username.placeholder"))
-        self.name_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.name_edit.setFixedWidth(240)
         self.name_edit.returnPressed.connect(self._change_username)
         self.name_edit.editingFinished.connect(self._change_username)
-        col.addWidget(self.name_edit, alignment=center)
+        self.name_edit.textEdited.connect(self._preview_username)
+        prompt = QLabel(">")
+        prompt.setFont(QFont(MONO_FAMILY, 13))
+        self.username_bar = QFrame()
+        self.username_bar.setObjectName("username")
+        self.username_bar.setFixedWidth(240)
+        bar_row = QHBoxLayout(self.username_bar)
+        bar_row.setContentsMargins(10, 4, 10, 4)
+        bar_row.setSpacing(6)
+        bar_row.addWidget(prompt)
+        bar_row.addWidget(self.name_edit)
+        col.addWidget(self.username_bar, alignment=center)
 
         self.cookie_btn = QPushButton(text("game.cookie"))
         self.cookie_btn.setFixedSize(240, 215)
-        self.cookie_btn.setFont(QFont("Courier New", 14))
+        self.cookie_btn.setFont(QFont(MONO_FAMILY, 14))
         self.cookie_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cookie_btn.setStyleSheet(COOKIE_BUTTON_STYLE)
         self.cookie_btn.clicked.connect(lambda: self.execute(self.machine.click))
         col.addWidget(self.cookie_btn, alignment=center)
 
         self.count_label = QLabel()
-        self.count_label.setObjectName("box")
+        self.count_label.setObjectName("count")
+        self.count_label.setFont(QFont(MONO_FAMILY, 14))
         self.count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.count_label.setFixedWidth(240)
         col.addWidget(self.count_label, alignment=center)
 
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        self.debug_btn = QPushButton(text("memory.open"))
+        col.addStretch()
+
+        debug_font = QFont(MONO_FAMILY, 13, QFont.Weight.Bold)
+        debug_font.setUnderline(True)
+        self.debug_header = QLabel(text("game.debug_options"))
+        self.debug_header.setFont(debug_font)
+        self.debug_header.setStyleSheet("color: #333333;")
+        self.debug_header.setFixedWidth(240)
+        self.debug_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(self.debug_header, alignment=center)
+
         self.pointer_btn = QPushButton(text("pointer.toggle"))
-        for btn in (self.debug_btn, self.pointer_btn):
-            btn.setObjectName("box")
-            btn.setMinimumHeight(54)
+        self.debug_btn = QPushButton(text("memory.open"))
+        for btn in (self.pointer_btn, self.debug_btn):
+            btn.setObjectName("debug")
+            btn.setFont(QFont(MONO_FAMILY, 13))
+            btn.setFixedWidth(240)
+            btn.setMinimumHeight(40)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            row.addWidget(btn)
+            col.addWidget(btn, alignment=center)
         self.pointer_btn.setCheckable(True)
         self.debug_btn.clicked.connect(self._open_debugger)
-        col.addLayout(row)
 
-        col.addStretch()
         return col
 
     def _build_right(self) -> QVBoxLayout:
@@ -211,13 +269,21 @@ class MainWindow(QWidget):
 
         self.buy_cursor_btn = QPushButton()
         self.buy_flag_btn = QPushButton()
+        self.buy_cursor_btn.setObjectName("buycursor")
+        self.buy_flag_btn.setObjectName("buyflag")
         self.buy_cursor_btn.clicked.connect(lambda: self.execute(self.machine.buy_cursor))
         self.buy_flag_btn.clicked.connect(lambda: self.execute(self.machine.buy_flag))
         for btn in (self.buy_cursor_btn, self.buy_flag_btn):
-            btn.setObjectName("box")
             btn.setMinimumHeight(44)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             col.addWidget(btn)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet(LIST_TEXT_STYLE)
+        self.status_label.setWordWrap(True)
+        col.addWidget(self.status_label)
+
+        col.addStretch()
 
         self.objects = QScrollArea()
         self.objects.setObjectName("objects")
@@ -227,26 +293,21 @@ class MainWindow(QWidget):
         inner = QWidget()
         inner.setObjectName("objectsInner")
         self.objects_layout = QVBoxLayout(inner)
-        self.objects_layout.setSpacing(0)
+        self.objects_layout.setContentsMargins(0, 0, 0, 0)
+        self.objects_layout.setSpacing(10)
 
         self.objects_header = QLabel(text("game.cursors"))
         self.objects_header.setStyleSheet(LIST_TEXT_STYLE)
         self.objects_header.setTextFormat(Qt.TextFormat.RichText)
         self.objects_layout.addWidget(self.objects_header)
         self.objects_tail = QVBoxLayout()
+        self.objects_tail.setSpacing(10)
         self.objects_layout.addLayout(self.objects_tail)
         self.objects_layout.addStretch()
         self.cursor_rows: list[QWidget] = []
 
         self.objects.setWidget(inner)
         col.addWidget(self.objects)
-
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet(LIST_TEXT_STYLE)
-        self.status_label.setWordWrap(True)
-        col.addWidget(self.status_label)
-
-        col.addStretch()
 
         self.win_label = QLabel(text("game.win.title"))
         self.win_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -281,7 +342,21 @@ class MainWindow(QWidget):
             self.set_status(str(error))
         self.refresh()
 
+    def _memory_preview_active(self) -> bool:
+        return self.memory_window is not None and self.memory_window.isVisible()
+
+    def _preview_username(self, raw: str) -> None:
+        if not self._memory_preview_active():
+            return
+        try:
+            data = parse_field(raw) + b"\0"
+        except ValueError:
+            return
+        self.memory_window.set_preview({self.safe_view().username_ptr: data})
+
     def _change_username(self) -> None:
+        if self.memory_window is not None:
+            self.memory_window.clear_preview()
         raw = self.name_edit.text()
         try:
             data = parse_field(raw)
@@ -309,8 +384,9 @@ class MainWindow(QWidget):
         self.cursor_rows.clear()
         for index, cursor in enumerate(view.cursors):
             label = QLabel()
-            label.setStyleSheet(LIST_TEXT_STYLE)
+            label.setStyleSheet(CARD_STYLE)
             label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
             label.setCursor(Qt.CursorShape.PointingHandCursor)
             label.mouseReleaseEvent = lambda _event, i=index: self.edit_cursor(i)  # type: ignore[assignment]
             self.objects_tail.addWidget(label)
@@ -329,29 +405,51 @@ class MainWindow(QWidget):
             name = display_field(cursor.name_bytes) or text("schema.cursor")
             label.setText(
                 f"<b>{name} (id {cursor.id}):</b><br>"
-                f"<i>{display_field(cursor.description_bytes)}</i><br>"
+                f"<i>{display_field(cursor.description_bytes)}</i>"
             )
 
     def edit_cursor(self, index: int) -> None:
-        from PyQt6.QtWidgets import QInputDialog
-
         view = self.safe_view()
         if index >= len(view.cursors):
             return
         cursor = view.cursors[index]
-        name, ok = QInputDialog.getText(
-            self, text("cursor.edit.title"), text("cursor.name"), text=cursor.name
-        )
-        if ok:
-            self.execute(lambda: self.machine.rename_cursor(index, parse_field(name)))
-        view = self.safe_view()
-        if index >= len(view.cursors):
+        name_addr = cursor.address + CURSOR_NAME
+        desc_addr = cursor.description_ptr
+
+        dialog = FormDialog(self, text("cursor.edit.title"), GRAY_THEME)
+        name_field = dialog.add_field("name", text("cursor.name"), value=cursor.name)
+        desc_field = dialog.add_field("description", text("cursor.description"), value=cursor.description)
+        dialog.finish()
+
+        def update_preview() -> None:
+            if not self._memory_preview_active():
+                return
+            spans: dict[int, bytes] = {}
+            try:
+                spans[name_addr] = parse_field(name_field.text()) + b"\0"
+            except ValueError:
+                pass
+            try:
+                spans[desc_addr] = parse_field(desc_field.text()) + b"\0"
+            except ValueError:
+                pass
+            self.memory_window.set_preview(spans)
+
+        name_field.textEdited.connect(lambda _t: update_preview())
+        desc_field.textEdited.connect(lambda _t: update_preview())
+
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        if self.memory_window is not None:
+            self.memory_window.clear_preview()
+        if not accepted:
             return
-        description, ok = QInputDialog.getText(
-            self, text("cursor.edit.title"), text("cursor.description"), text=view.cursors[index].description
-        )
-        if ok:
-            self.execute(lambda: self.machine.describe_cursor(index, parse_field(description)))
+        name = dialog.value("name")
+        description = dialog.value("description")
+        self.execute(lambda: self._apply_cursor_edits(index, name, description))
+
+    def _apply_cursor_edits(self, index: int, name: str, description: str) -> None:
+        self.machine.rename_cursor(index, parse_field(name))
+        self.machine.describe_cursor(index, parse_field(description))
 
     def _register_pointer(
         self, widget: QWidget, provider: Callable[[], tuple[str, str, int]]
@@ -408,9 +506,13 @@ class MainWindow(QWidget):
         if not self.name_edit.hasFocus() and self.name_edit.text() != view.username:
             self.name_edit.setText(view.username)
 
-        self.count_label.setText(f"{text('game.cookies.count')} {view.cookies}")
-        self.buy_cursor_btn.setText(f"{text('game.cursor.buy')} [{CURSOR_PRICE} {text('game.cookies')}]")
-        self.buy_flag_btn.setText(f"{text('game.flag.buy')} [{FLAG_PRICE} {text('game.cookies')}]")
+        self.count_label.setText(f"{view.cookies} {text('game.cookies')}")
+        self.buy_cursor_btn.setText(
+            f"{text('game.cursor.buy')} {price_label(CURSOR_PRICE)} {text('game.cookies')}"
+        )
+        self.buy_flag_btn.setText(
+            f"{text('game.flag.buy')} {price_label(FLAG_PRICE)} {text('game.cookies')}"
+        )
         self.buy_cursor_btn.setEnabled(view.cookies >= CURSOR_PRICE)
         self.buy_flag_btn.setEnabled(view.cookies >= FLAG_PRICE and not view.flag_owned)
 
@@ -430,9 +532,10 @@ class MainWindow(QWidget):
 
     def _set_game_visible(self, visible: bool) -> None:
         for widget in (
-            self.name_edit,
+            self.username_bar,
             self.cookie_btn,
             self.count_label,
+            self.debug_header,
             self.debug_btn,
             self.pointer_btn,
             self.buy_cursor_btn,
@@ -447,6 +550,11 @@ class CookieApp:
     def __init__(self, machine: Machine) -> None:
         self._owns_app = QApplication.instance() is None
         self.app = QApplication.instance() or QApplication(sys.argv)
+        for _font in UI_FONT_FILES:
+            QFontDatabase.addApplicationFont(asset_path(_font))
+        default_font = self.app.font()
+        default_font.setFamily(UI_FONT_FAMILY)
+        self.app.setFont(default_font)
         self.window = MainWindow(machine)
 
     def run(self) -> int:

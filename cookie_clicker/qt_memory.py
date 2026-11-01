@@ -5,6 +5,7 @@ from typing import Callable
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -38,7 +39,8 @@ from .game import (
     USER_USERNAME,
     Machine,
 )
-from .memory import CODE, GLOBALS, HEAP, MemoryFault
+from .memory import CODE, GLOBALS, HEAP, MASK64, MemoryFault
+from .qt_dialogs import GRAY_THEME, FormDialog
 from .resources import text
 
 ROW_COUNT = 25
@@ -51,6 +53,7 @@ COLOR_STRING = "#2ea043"
 COLOR_INT = "#1f6feb"
 COLOR_STRUCT_PTR = "#e08a2c"
 COLOR_SELECTED_BG = "#ffd9a0"
+COLOR_PREVIEW_BG = "#ffe600"
 COLOR_PLAIN = "#333333"
 COLOR_FLASH_BG = "#ff5050"
 STRUCT_FIELD_COLORS = ("#1f6feb", "#2ea043", "#b08900", "#8957e5")
@@ -83,6 +86,7 @@ class MemoryWindow(QWidget):
         self.font_size = 13
 
         self.cell_values: dict[int, int] = {}
+        self.preview: dict[int, int] = {}
         self._cell_style_cache: dict = {}
         self.flashing: set[int] = set()
         self.flash_handles: dict[int, QTimer] = {}
@@ -160,24 +164,6 @@ class MemoryWindow(QWidget):
         reset.setObjectName("section")
         reset.clicked.connect(lambda: self._zoom(0, reset=True))
         nav.addWidget(reset)
-
-        nav.addSpacing(12)
-        self.selected_label = QLabel("\u2014")
-        self.selected_label.setFont(self._mono)
-        nav.addWidget(self.selected_label)
-        self.edit_value = QLineEdit()
-        self.edit_value.setObjectName("jump")
-        self.edit_value.setFixedWidth(140)
-        self.edit_value.returnPressed.connect(self._write_selected)
-        nav.addWidget(self.edit_value)
-        write_btn = QPushButton(text("memory.write"))
-        write_btn.setObjectName("section")
-        write_btn.clicked.connect(self._write_selected)
-        nav.addWidget(write_btn)
-        self.follow_btn = QPushButton(text("memory.follow"))
-        self.follow_btn.setObjectName("section")
-        self.follow_btn.clicked.connect(self._follow_selected)
-        nav.addWidget(self.follow_btn)
         nav.addStretch()
         left.addLayout(nav)
 
@@ -263,10 +249,22 @@ class MemoryWindow(QWidget):
 
         count = 2 if self.qwords else BYTES_PER_ROW
         metrics = self._mono_metrics()
-        digits = 16 if self.qwords else 2
-        cell_w = metrics.horizontalAdvance("0" * digits) + 10
         addr_w = metrics.horizontalAdvance("0x000000000000") + 16
         ascii_w = metrics.horizontalAdvance("0" * (BYTES_PER_ROW + 1)) + 6
+        bar_w = self._sep().sizeHint().width()
+        spacing = self.grid.horizontalSpacing()
+        margins = self.grid.contentsMargins().left() + self.grid.contentsMargins().right()
+        byte_cell_w = metrics.horizontalAdvance("00") + 10
+        byte_columns = 2 + 3 + BYTES_PER_ROW
+        target_width = (
+            addr_w
+            + 3 * bar_w
+            + BYTES_PER_ROW * byte_cell_w
+            + ascii_w
+            + (byte_columns - 1) * spacing
+            + margins
+        )
+        cell_w = metrics.horizontalAdvance("0" * 16) + 10 if self.qwords else byte_cell_w
         for row in range(ROW_COUNT):
             addr = QLabel()
             addr.setFont(self._mono)
@@ -285,34 +283,30 @@ class MemoryWindow(QWidget):
                 cell.setMouseTracking(True)
                 cell.installEventFilter(self)
                 self._cell_pos[cell] = (row, col)
-                grid_col = 2 + col + (1 if (not self.qwords and col >= 8) else 0)
+                grid_col = 2 + col * 2 if self.qwords else 2 + col + (1 if col >= 8 else 0)
                 self.grid.addWidget(cell, row, grid_col)
                 cells.append(cell)
-            if not self.qwords:
-                self.grid.addWidget(self._sep(), row, 10)
+            self.grid.addWidget(self._sep(), row, 3 if self.qwords else 10)
             self.value_cells.append(cells)
-            sep_col = 2 + count + (1 if not self.qwords else 0)
+            sep_col = 2 + (count - 1) * 2 + 1 if self.qwords else 2 + count + 1
             self.grid.addWidget(self._sep(), row, sep_col)
             ascii_label = QLabel()
             ascii_label.setFont(self._mono)
             ascii_label.setFixedWidth(ascii_w)
             self.grid.addWidget(ascii_label, row, sep_col + 1)
             self.ascii_cells.append(ascii_label)
+        for col in range(2 + BYTES_PER_ROW + 2):
+            self.grid.setColumnMinimumWidth(col, 0)
+        if self.qwords:
+            natural = addr_w + 3 * bar_w + 2 * cell_w + ascii_w + 6 * spacing + margins
+            leftover = max(0, target_width - natural)
+            side = leftover // 3
+            self.grid.setColumnMinimumWidth(1, bar_w + side)
+            self.grid.setColumnMinimumWidth(3, bar_w + leftover - 2 * side)
+            self.grid.setColumnMinimumWidth(sep_col, bar_w + side)
         self.grid_host.setFixedHeight(metrics.height() * (ROW_COUNT + 1) + 10)
         self.grid.setRowStretch(ROW_COUNT, 1)
-        bar_w = self._sep().sizeHint().width()
-        bars = 2 if self.qwords else 3
-        columns = 2 + bars + count
-        margins = self.grid.contentsMargins().left() + self.grid.contentsMargins().right()
-        grid_width = (
-            addr_w
-            + bars * bar_w
-            + count * cell_w
-            + ascii_w
-            + (columns - 1) * self.grid.horizontalSpacing()
-            + margins
-        )
-        self.grid_host.setFixedWidth(grid_width)
+        self.grid_host.setFixedWidth(target_width)
         old_box = getattr(self, "struct_box", None)
         if old_box is not None:
             old_box.setParent(None)
@@ -335,6 +329,7 @@ class MemoryWindow(QWidget):
         bar = QLabel("|")
         bar.setFont(self._mono)
         bar.setStyleSheet(f"color: {COLOR_PLAIN};")
+        bar.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         return bar
 
     def open_at(self, address: int) -> None:
@@ -362,12 +357,6 @@ class MemoryWindow(QWidget):
             return
         self.jump_to(address)
 
-    def _mapped_bounds(self) -> tuple[int, int]:
-        regions = self.machine.memory.regions
-        lowest = min(r.base for r in regions)
-        highest = max(r.base + r.size for r in regions)
-        return lowest, highest
-
     def _current_region(self) -> tuple[int, int] | None:
         for region in self.machine.memory.regions:
             if region.base <= self.base < region.base + region.size:
@@ -375,9 +364,14 @@ class MemoryWindow(QWidget):
         return None
 
     def _scroll_rows(self, rows: int) -> None:
-        lowest, highest = self._mapped_bounds()
+        region = self._current_region()
+        if region is None:
+            return
+        low, size = region
+        view_bytes = ROW_COUNT * BYTES_PER_ROW
+        max_base = max(low, low + size - view_bytes)
         new_base = self.base + rows * BYTES_PER_ROW
-        new_base = max(lowest, min(new_base, highest - BYTES_PER_ROW))
+        new_base = max(low, min(new_base, max_base))
         self.base = new_base & ~0xF
         self._sync_jump_text()
         self.refresh()
@@ -532,9 +526,6 @@ class MemoryWindow(QWidget):
             region = self._current_region()
             in_section = region is not None and region[0] == address
             self.section_buttons[key].setChecked(in_section)
-        self.follow_btn.setEnabled(
-            self.selected is not None and self.pointer_field_base(self.selected) is not None
-        )
         self._update_context_panel()
 
         count = 2 if self.qwords else BYTES_PER_ROW
@@ -555,22 +546,32 @@ class MemoryWindow(QWidget):
                         self._cell_style_cache[cell] = key
                 self.ascii_cells[row].setText(text("memory.unmapped"))
                 continue
-            ascii_text = "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
+            if self.preview:
+                disp = bytearray(raw)
+                for i in range(BYTES_PER_ROW):
+                    override = self.preview.get(base + i)
+                    if override is not None:
+                        disp[i] = override
+                disp = bytes(disp)
+            else:
+                disp = raw
+            ascii_text = "".join(chr(b) if 32 <= b < 127 else "." for b in disp)
             self.ascii_cells[row].setText(ascii_text[:8] + " " + ascii_text[8:])
             self.ascii_cells[row].setStyleSheet(f"color: {COLOR_PLAIN};")
             if self.qwords:
-                values = [int.from_bytes(raw[0:8], "little"), int.from_bytes(raw[8:16], "little")]
+                real_values = [int.from_bytes(raw[0:8], "little"), int.from_bytes(raw[8:16], "little")]
+                disp_values = [int.from_bytes(disp[0:8], "little"), int.from_bytes(disp[8:16], "little")]
             else:
-                values = list(raw)
-            for col, value in enumerate(values):
+                real_values = list(raw)
+                disp_values = list(disp)
+            for col, value in enumerate(disp_values):
                 address = self._cell_address(row, col)
                 cell = self.value_cells[row][col]
                 previous = self.cell_values.get(address)
-                if previous is not None and previous != value:
+                if previous is not None and previous != real_values[col]:
                     self._flash(address)
-                self.cell_values[address] = value
+                self.cell_values[address] = real_values[col]
                 self._style_cell(cell, address, value)
-        self._apply_selection_marks()
         self._update_struct_overlay()
 
     def _style_cell(self, cell: QLabel, address: int, value: int) -> None:
@@ -578,11 +579,17 @@ class MemoryWindow(QWidget):
         color = self._byte_color(address)
         is_pointer = self._is_pointer_cell(address)
         bold = self.bold_range is not None and self.bold_range[0] <= address < self.bold_range[1]
+        width = 8 if self.qwords else 1
+        is_preview = any((address + k) in self.preview for k in range(width))
+        if is_preview and not self.qwords and value == 0:
+            color = COLOR_PLAIN
         css = [f"color: {color};", "padding: 0px;"]
         css.append("border: 1px solid transparent;")
         if is_pointer:
             css.append(f"border-bottom: 1px solid {color};")
-        if address in self.flashing:
+        if is_preview:
+            css.append(f"background: {COLOR_PREVIEW_BG};")
+        elif address in self.flashing:
             css.append(f"background: {COLOR_FLASH_BG}; color: white;")
         elif self.selected == address:
             css.append(f"background: {COLOR_SELECTED_BG};")
@@ -635,12 +642,6 @@ class MemoryWindow(QWidget):
         box.setGeometry(rect)
         box.raise_()
         box.show()
-
-    def _apply_selection_marks(self) -> None:
-        if self.selected is None:
-            self.selected_label.setText("\u2014")
-        else:
-            self.selected_label.setText(f"0x{self.selected:016X}")
 
     def _update_context_panel(self) -> None:
         region = self._current_region()
@@ -740,8 +741,7 @@ class MemoryWindow(QWidget):
             elif etype == QEvent.Type.Leave:
                 self._hover_clear.start()
             elif etype == QEvent.Type.MouseButtonDblClick:
-                self._click(self._cell_address(row, col))
-                self._follow_selected()
+                self._open_edit_dialog(self._cell_address(row, col))
             elif etype == QEvent.Type.MouseButtonPress:
                 self._click(self._cell_address(row, col))
         elif obj is getattr(self, "grid_host", None):
@@ -948,44 +948,66 @@ class MemoryWindow(QWidget):
             self.tooltip.setText(self._struct_tooltip(allocation))
         else:
             self.struct_outline = None
-        try:
-            raw = self.machine.read_memory(address, 8 if self.qwords else 1)
-            value = int.from_bytes(raw, "little")
-            self.edit_value.setText(f"0x{value:X}" if self.qwords else f"{value:02X}")
-        except MemoryFault:
-            pass
         self.refresh()
 
-    def _write_selected(self) -> None:
-        if self.selected is None:
-            return
-        raw = self.edit_value.text().strip()
+    def _parse_cell_value(self, raw: str) -> bytes | None:
+        raw = raw.strip()
         try:
             if self.qwords:
                 number = int(raw, 16 if raw.lower().startswith("0x") else 10)
-                data = (number & ((1 << 64) - 1)).to_bytes(8, "little")
-            else:
-                number = int(raw.lower().removeprefix("0x"), 16)
-                if not 0 <= number <= 0xFF:
-                    raise ValueError
-                data = bytes((number,))
-            self.machine.write_memory(self.selected, data)
-            self.status.setText("")
-            self.refresh()
-            if self.on_change is not None:
-                self.on_change()
-        except (MemoryFault, OverflowError, ValueError):
-            self.status.setText(text("error.hex_byte"))
+                return (number & MASK64).to_bytes(8, "little")
+            number = int(raw.lower().removeprefix("0x"), 16)
+            if not 0 <= number <= 0xFF:
+                return None
+            return bytes((number,))
+        except (ValueError, OverflowError):
+            return None
 
-    def _follow_selected(self) -> None:
-        if self.selected is None:
-            return
-        base = self.pointer_field_base(self.selected)
-        if base is None:
-            return
+    def set_preview(self, spans: dict[int, bytes]) -> None:
+        overlay: dict[int, int] = {}
+        for base, data in spans.items():
+            for i, byte in enumerate(data):
+                overlay[base + i] = byte
+        self.preview = overlay
+        if self.isVisible():
+            self.refresh()
+
+    def clear_preview(self) -> None:
+        if self.preview:
+            self.preview = {}
+            if self.isVisible():
+                self.refresh()
+
+    def _preview_edit(self, address: int, raw: str) -> None:
+        data = self._parse_cell_value(raw)
+        self.set_preview({address: data} if data is not None else {})
+
+    def _open_edit_dialog(self, address: int) -> None:
+        self._click(address)
+        width = 8 if self.qwords else 1
         try:
-            target = self.machine.memory.read_u64(base)
-            self.machine.memory.read(target, 1)
-            self.jump_to(target)
+            raw = self.machine.read_memory(address, width)
         except MemoryFault:
-            self.status.setText(text("memory.unmapped"))
+            return
+        value = int.from_bytes(raw, "little")
+        current = f"0x{value:X}" if self.qwords else f"{value:02X}"
+        dialog = FormDialog(self, text("memory.edit.title"), GRAY_THEME)
+        dialog.add_field("addr", text("schema.address"), value=f"0x{address:012X}", readonly=True)
+        field = dialog.add_field("value", text("schema.value"), value=current)
+        dialog.finish()
+        field.textChanged.connect(lambda raw_text: self._preview_edit(address, raw_text))
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self.clear_preview()
+        if accepted:
+            data = self._parse_cell_value(dialog.value("value"))
+            if data is None:
+                self.status.setText(text("error.hex_byte"))
+            else:
+                try:
+                    self.machine.write_memory(address, data)
+                    self.status.setText("")
+                    if self.on_change is not None:
+                        self.on_change()
+                except MemoryFault:
+                    self.status.setText(text("error.hex_byte"))
+        self.refresh()
