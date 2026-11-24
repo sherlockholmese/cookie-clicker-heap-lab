@@ -3,7 +3,7 @@
 
 int main() {
     char input[64];
-    char password[64] = "MYPASSWORD";
+    char password[64] = "MYPASSWORD\n";
 
     printf("Your password > ");
     fgets(input, sizeof(input), stdin);
