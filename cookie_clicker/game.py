@@ -21,6 +21,9 @@ G_WON = 0x30
 G_FLAG_OWNED = 0x38
 G_CURSOR_TABLE = 0x100
 
+USERNAME_BUFFER = HEAP
+USERNAME_BUFFER_SIZE = 0x20
+
 USER_ID = 0
 USER_USERNAME = 8
 CURSOR_ID = 0
@@ -274,6 +277,9 @@ class Machine:
             raise GameError(text("error.field_too_long").replace("{count}", str(maximum)))
         target = self._read_u64(self.user_address() + USER_USERNAME)
         self._write(target, data + b"\0")
+
+    def clear_username_buffer(self) -> None:
+        self._write(USERNAME_BUFFER, bytes(USERNAME_BUFFER_SIZE))
 
     def rename_cursor(self, index: int, data: bytes) -> None:
         self._write(self.cursor_address(index) + CURSOR_NAME, data[:4095] + b"\0")

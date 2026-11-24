@@ -50,6 +50,10 @@ QFrame#username { background: #595959; border: 1px solid #333333; }
 QFrame#username QLabel, QFrame#username QLineEdit {
     background: transparent; border: none; color: white;
 }
+QFrame#username QPushButton {
+    background: transparent; border: none; color: white; padding: 0px;
+}
+QFrame#username QPushButton:pressed { background: #333333; }
 QLabel#count {
     background: #ffab40; border: 1px solid #5a5a5a; color: #333333;
     font-weight: bold; padding: 6px;
@@ -225,6 +229,12 @@ class MainWindow(QWidget):
         bar_row.setSpacing(6)
         bar_row.addWidget(prompt)
         bar_row.addWidget(self.name_edit)
+        self.clear_name_btn = QPushButton(text("game.username.clear"))
+        self.clear_name_btn.setFixedSize(24, 24)
+        self.clear_name_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.clear_name_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_name_btn.clicked.connect(self._clear_username)
+        bar_row.addWidget(self.clear_name_btn)
         col.addWidget(self.username_bar, alignment=center)
 
         self.cookie_btn = QPushButton(text("game.cookie"))
@@ -370,6 +380,12 @@ class MainWindow(QWidget):
         if data == self.safe_view().username.encode("utf-8"):
             return
         self.execute(lambda: self.machine.rename_user(data))
+
+    def _clear_username(self) -> None:
+        if self.memory_window is not None:
+            self.memory_window.clear_preview()
+        self.execute(self.machine.clear_username_buffer)
+        self.name_edit.setText(self.safe_view().username)
 
     def _open_debugger(self) -> None:
         from .qt_memory import MemoryWindow

@@ -807,7 +807,7 @@ class MemoryWindow(QWidget):
                 target = self.machine.memory.read_u64(base)
                 region = self.string_region(target)
                 if region is not None:
-                    new_range = (region[0], region[0] + region[1])
+                    new_range = (target, region[0] + region[1])
                 elif self._field_kind(address) == "ptr:char":
                     aligned = target & ~0x7
                     new_range = (aligned, aligned + 8)
