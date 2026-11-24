@@ -119,11 +119,15 @@ def parse_field(value: str) -> bytes:
     return bytes(output)
 
 
-def display_field(raw: bytes) -> str:
+def raw_field_text(raw: bytes) -> str:
     out = []
     for byte in raw:
         out.append(chr(byte) if 32 <= byte < 127 else f"\\x{byte:02x}")
-    return html.escape("".join(out))
+    return "".join(out)
+
+
+def display_field(raw: bytes) -> str:
+    return html.escape(raw_field_text(raw))
 
 
 def price_label(amount: int) -> str:
@@ -408,6 +412,17 @@ class MainWindow(QWidget):
                 f"<i>{display_field(cursor.description_bytes)}</i>"
             )
 
+    def _field_bytes(self, address: int, cap: int = 4096) -> bytes:
+        size = cap
+        while size > 0:
+            try:
+                raw = self.machine.read_memory(address, size)
+            except MemoryFault:
+                size //= 2
+                continue
+            return raw.split(b"\0", 1)[0]
+        return b""
+
     def edit_cursor(self, index: int) -> None:
         view = self.safe_view()
         if index >= len(view.cursors):
@@ -416,9 +431,12 @@ class MainWindow(QWidget):
         name_addr = cursor.address + CURSOR_NAME
         desc_addr = cursor.description_ptr
 
+        name_value = raw_field_text(self._field_bytes(name_addr))
+        desc_value = raw_field_text(self._field_bytes(desc_addr))
+
         dialog = FormDialog(self, text("cursor.edit.title"), GRAY_THEME)
-        name_field = dialog.add_field("name", text("cursor.name"), value=cursor.name)
-        desc_field = dialog.add_field("description", text("cursor.description"), value=cursor.description)
+        name_field = dialog.add_field("name", text("cursor.name"), value=name_value)
+        desc_field = dialog.add_field("description", text("cursor.description"), value=desc_value)
         dialog.finish()
 
         def update_preview() -> None:
@@ -445,11 +463,19 @@ class MainWindow(QWidget):
             return
         name = dialog.value("name")
         description = dialog.value("description")
-        self.execute(lambda: self._apply_cursor_edits(index, name, description))
+        self.execute(
+            lambda: self._apply_cursor_edits(
+                index, name, description, name != name_value, description != desc_value
+            )
+        )
 
-    def _apply_cursor_edits(self, index: int, name: str, description: str) -> None:
-        self.machine.rename_cursor(index, parse_field(name))
-        self.machine.describe_cursor(index, parse_field(description))
+    def _apply_cursor_edits(
+        self, index: int, name: str, description: str, name_changed: bool, desc_changed: bool
+    ) -> None:
+        if name_changed:
+            self.machine.rename_cursor(index, parse_field(name))
+        if desc_changed:
+            self.machine.describe_cursor(index, parse_field(description))
 
     def _register_pointer(
         self, widget: QWidget, provider: Callable[[], tuple[str, str, int]]

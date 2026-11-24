@@ -67,7 +67,7 @@ QPushButton#section, QPushButton#mode {
 }
 QPushButton#section:checked, QPushButton#mode:checked { background: #d7d7d7; font-weight: bold; }
 QLabel#title { background: #efefef; border: 1px solid #5a5a5a; padding: 5px; }
-QLabel#tooltip { background: #bcbcbc; padding: 10px 16px;}
+QLabel#tooltip { background: #bcbcbc; padding: 15px 24px;}
 QLineEdit#jump { background: #efefef; border: 1px solid #5a5a5a; padding: 3px; }
 """
 
@@ -190,36 +190,36 @@ class MemoryWindow(QWidget):
         outer.addLayout(right, 0)
         tip_title = QLabel(text("memory.tooltip"))
         tip_title.setObjectName("title")
-        tip_title.setFixedWidth(230)
+        tip_title.setFixedWidth(345)
         right.addWidget(tip_title)
         self.tooltip = QLabel("")
         self.tooltip.setObjectName("tooltip")
         self.tooltip.setTextFormat(Qt.TextFormat.RichText)
-        self.tooltip.setFont(QFont("Courier New", 12))
+        self.tooltip.setFont(QFont("Courier New", 18))
         self.tooltip.setWordWrap(True)
-        self.tooltip.setFixedWidth(230)
-        self.tooltip.setFixedHeight(210)
+        self.tooltip.setFixedWidth(345)
+        self.tooltip.setFixedHeight(315)
         self.tooltip.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         right.addWidget(self.tooltip)
 
         self.fn_title = QLabel(text("memory.section.functions"))
         self.fn_title.setObjectName("title")
-        self.fn_title.setFixedWidth(230)
+        self.fn_title.setFixedWidth(345)
         right.addWidget(self.fn_title)
         self.fn_table = QLabel("")
-        self.fn_table.setFont(QFont("Courier New", 11))
+        self.fn_table.setFont(QFont("Courier New", 16))
         self.fn_table.setTextFormat(Qt.TextFormat.RichText)
-        self.fn_table.setFixedWidth(230)
+        self.fn_table.setFixedWidth(345)
         self.fn_table.setAlignment(Qt.AlignmentFlag.AlignTop)
         right.addWidget(self.fn_table)
 
         self.heap_title = QLabel(text("memory.heap_objects"))
         self.heap_title.setObjectName("title")
-        self.heap_title.setFixedWidth(230)
+        self.heap_title.setFixedWidth(345)
         right.addWidget(self.heap_title)
         self.heap_scroll = QScrollArea()
         self.heap_scroll.setWidgetResizable(True)
-        self.heap_scroll.setFixedWidth(230)
+        self.heap_scroll.setFixedWidth(345)
         self.heap_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.heap_list_inner = QWidget()
         self.heap_list_layout = QVBoxLayout(self.heap_list_inner)
@@ -695,7 +695,7 @@ class MemoryWindow(QWidget):
                 f"<span style='color:{COLOR_PLAIN}'>{name}</span><br>"
                 f"<span style='color:{COLOR_STRUCT_PTR}'><u>0x{base:012X}</u></span>"
             )
-            entry.setFont(QFont("Courier New", 11))
+            entry.setFont(QFont("Courier New", 16))
             entry.setTextFormat(Qt.TextFormat.RichText)
             entry.setCursor(Qt.CursorShape.PointingHandCursor)
             entry.mousePressEvent = lambda _e, a=base: self.jump_to(a)  # type: ignore[assignment]
@@ -808,6 +808,9 @@ class MemoryWindow(QWidget):
                 region = self.string_region(target)
                 if region is not None:
                     new_range = (region[0], region[0] + region[1])
+                elif self._field_kind(address) == "ptr:char":
+                    aligned = target & ~0x7
+                    new_range = (aligned, aligned + 8)
             except MemoryFault:
                 pass
         if new_outline == self.struct_outline and new_range == self.bold_range:
