@@ -13,7 +13,7 @@ dependencies = ["PyQt6>=6.6"]
 cookie-clicker-pwn = "cookie_clicker.app:main"
 
 [tool.setuptools.package-data]
-"cookie_clicker.assets" = ["*.txt"]
+"cookie_clicker.assets" = ["*.txt", "*.ttf", "static/*.ttf"]
 
 [tool.setuptools.packages.find]
 include = ["cookie_clicker*"]

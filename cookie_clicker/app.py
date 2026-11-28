@@ -10,7 +10,6 @@ from .qt_ui import CookieApp
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="cookie-clicker-pwn", description="Cookie Clicker pwn workshop")
-    group = result.add_mutually_exclusive_group()
     return result
 
 
